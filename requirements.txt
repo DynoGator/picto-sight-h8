@@ -1,0 +1,10 @@
+# Picto-Sight H8 Python Dependencies
+# Note: On Raspberry Pi OS (Bookworm / Trixie) with a Hailo-8 / Hailo-8L AI HAT+,
+# create the virtual environment with `--system-site-packages` (see ./install.sh)
+# so `hailo_platform` (python3-hailort) and system Qt6/Wayland plugins are inherited.
+
+numpy>=1.26.0
+opencv-python>=4.8.0
+PyQt6>=6.6.0
+pyserial>=3.5
+pytest>=8.0.0

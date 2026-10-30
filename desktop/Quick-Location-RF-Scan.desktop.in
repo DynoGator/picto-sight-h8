@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Quick RF Location Scan
+GenericName=Quick RF Scan & Permanent Location Profile
+Comment=Immediately runs a Quick Multi-Layer RF Scan and permanently saves a timestamped Location Profile
+Exec=@INSTALL_DIR@/launch_scanner.sh --gui --auto-scan quick
+Icon=@INSTALL_DIR@/icons/quick-scan-profile.svg
+Terminal=false
+Categories=HamRadio;Science;
+StartupNotify=true

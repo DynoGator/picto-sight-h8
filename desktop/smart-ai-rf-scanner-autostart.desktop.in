@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Picto-Sight H8 RF Scanner (Boot Autostart)
+Comment=Autostarts Picto-Sight H8 AI Smart RF Scanner Studio on Wayland/labwc boot
+Exec=@INSTALL_DIR@/autostart_scanner.sh
+Icon=@INSTALL_DIR@/icons/smart-scanner.svg
+Terminal=false
+Categories=HamRadio;Science;
+X-GNOME-Autostart-enabled=true
+X-LXDE-Autostart-enabled=true
+StartupNotify=false
+Hidden=false

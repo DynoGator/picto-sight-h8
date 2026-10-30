@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bgq" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#071a18"/>
+      <stop offset="100%" stop-color="#091528"/>
+    </linearGradient>
+    <linearGradient id="accq" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#00ffaa"/>
+      <stop offset="100%" stop-color="#00d4ff"/>
+    </linearGradient>
+  </defs>
+  <rect x="6" y="6" width="116" height="116" rx="24" fill="url(#bgq)" stroke="url(#accq)" stroke-width="4"/>
+  <!-- RF Radar Rings -->
+  <circle cx="64" cy="56" r="34" fill="none" stroke="#10b981" stroke-width="2" stroke-dasharray="6 4" opacity="0.55"/>
+  <circle cx="64" cy="56" r="21" fill="none" stroke="#00f0ff" stroke-width="2" opacity="0.7"/>
+  <!-- GPS Location Pin -->
+  <path d="M64 24 C50 24 40 34 40 47 C40 64 64 86 64 86 C64 86 88 64 88 47 C88 34 78 24 64 24 Z" fill="#063b34" stroke="#00ffaa" stroke-width="3.5"/>
+  <!-- Quick Lightning Bolt -->
+  <polygon points="67,33 53,51 63,51 59,67 75,47 65,47" fill="#00f0ff"/>
+  <!-- Bottom Badge -->
+  <rect x="18" y="94" width="92" height="20" rx="6" fill="#052e22" stroke="#10b981" stroke-width="2"/>
+  <text x="64" y="108" font-family="monospace" font-size="12" font-weight="bold" fill="#00ffaa" text-anchor="middle">QUICK SCAN</text>
+</svg>

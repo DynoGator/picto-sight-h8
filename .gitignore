@@ -1,0 +1,41 @@
+# Python & Virtual Environments
+.venv/
+venv/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.hypothesis/
+
+# Runtime Logs & HailoRT Telemetry
+logs/
+*.log
+hailort.log
+pyhailort.log
+
+# User-Specific GPS Coordinates, Saved Location Profiles & Runtime Exports
+# (Preserve empty directories via .gitkeep; never commit personal locality/GPS scans)
+profiles/*
+!profiles/.gitkeep
+export/*
+!export/.gitkeep
+
+# Secrets, Credentials & Local Environment Overrides
+.env
+.env.*
+*secret*
+*token*
+*pat*
+*.key
+*.pem
+
+# Editor / OS Artifacts
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*~

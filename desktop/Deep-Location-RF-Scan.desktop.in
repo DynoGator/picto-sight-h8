@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Deep AI RF Location Scan
+GenericName=Deep 1MHz AI Pictogram Scan & Location Profile
+Comment=Immediately runs a Deep 5-Frame 1MHz Hailo-8 AI Scan and permanently saves a timestamped Location Profile
+Exec=@INSTALL_DIR@/launch_scanner.sh --gui --auto-scan deep
+Icon=@INSTALL_DIR@/icons/deep-scan-profile.svg
+Terminal=false
+Categories=HamRadio;Science;
+StartupNotify=true

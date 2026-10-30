@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Picto-Sight H8 RF Scanner
+GenericName=AI Pictogram RF Scanner & Gqrx Controller
+Comment=Hailo-8 26 TOPS Multi-Layer RF Scanner, Location Profiles & Instant Gqrx Demodulator
+Exec=@INSTALL_DIR@/launch_scanner.sh --gui
+Icon=@INSTALL_DIR@/icons/smart-scanner.svg
+Terminal=false
+Categories=HamRadio;Science;AudioVideo;
+StartupNotify=true

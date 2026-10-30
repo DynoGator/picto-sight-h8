@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Custom RF Profile Scan
+GenericName=Custom Demod & Threshold RF Scan
+Comment=Opens Custom Demodulation & SNR/Floor Threshold Controls and launches a Custom RF Location Scan
+Exec=@INSTALL_DIR@/launch_scanner.sh --gui --auto-scan custom
+Icon=@INSTALL_DIR@/icons/custom-scan-profile.svg
+Terminal=false
+Categories=HamRadio;Science;
+StartupNotify=true
