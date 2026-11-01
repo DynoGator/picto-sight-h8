@@ -6,7 +6,7 @@
 [![SDR: HackRF One](https://img.shields.io/badge/SDR-HackRF%20One%20(1--6000%20MHz)-ffb300.svg)](#strict-1-at-a-time-sdr-arbiter--non-root-usb-self-healing)
 [![Receiver: Gqrx 2.17+](https://img.shields.io/badge/Receiver-Gqrx%202.17%2B%20Auto--Tuner-7c4dff.svg)](#native-gqrx-217-profile-synthesis--verified-live-tuning)
 [![Demod: rtl--433 / readsb / multimon](https://img.shields.io/badge/Demod-rtl--433%20%7C%20readsb%20%7C%20w--scan-00b0ff.svg)](#multi-tool-demodulation-engine--telemetry-tv--voice-data)
-[![Tests: 27 Passing](https://img.shields.io/badge/Tests-27%2F27%20Passing-brightgreen.svg)](#verification--test-suite)
+[![Tests: 31 Passing](https://img.shields.io/badge/Tests-31%2F31%20Passing-brightgreen.svg)](#verification--test-suite)
 
 **Picto-Sight H8** is a production-grade, hardware-accelerated **AI Smart RF Scanner, Multi-Frame Spectrogram Pictogram Classifier, and Automated Gqrx SIGINT Controller** built for **Raspberry Pi 5** equipped with a **Hailo-8 (26 TOPS PCIe) AI Accelerator**, **HackRF One SDR**, and **USB u-blox GNSS** receiver.
 
@@ -176,6 +176,12 @@ chmod +x install.sh
 
 # Demodulate live IoT/weather/meter sensor telemetry at 433.92 MHz via rtl_433 & HackRF
 ./launch_scanner.sh --telemetry 433.92
+
+# Demodulate live digital data (POCSAG/FLEX pagers, EAS alerts, APRS) at 154.600 MHz
+./launch_scanner.sh --decode-data 154.600
+
+# Analyze ATSC digital broadcast television channel at 473.0 MHz (Ch 14)
+./launch_scanner.sh --analyze-tv 473.0
 ```
 
 ### Importing Bookmarks Directly Inside Gqrx
@@ -217,7 +223,7 @@ picto-sight-h8/
 ├── docs/images/                             # High-resolution HDMI Studio & 5" DSI Touch screenshots
 ├── profiles/                                # Runtime saved Location Profiles (gitignored for GPS privacy)
 ├── export/                                  # Runtime Gqrx bookmarks & JSON exports (gitignored)
-└── tests/                                   # 27 unit & live hardware integration tests
+└── tests/                                   # 31 unit & live hardware integration tests
 ```
 
 ---

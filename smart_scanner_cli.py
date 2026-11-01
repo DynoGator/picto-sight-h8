@@ -197,6 +197,18 @@ def main() -> None:
         default=None,
         help="Demodulate live IoT/weather/meter sensor telemetry at given frequency in MHz using rtl_433 and HackRF",
     )
+    parser.add_argument(
+        "--decode-data",
+        type=float,
+        default=None,
+        help="Demodulate live digital data (POCSAG/FLEX pagers, EAS alerts, APRS) at given frequency in MHz",
+    )
+    parser.add_argument(
+        "--analyze-tv",
+        type=float,
+        default=None,
+        help="Analyze North American ATSC digital broadcast television channel at given frequency in MHz",
+    )
     parser.add_argument("--voice-only", action="store_true", help="Filter output list to only voice broadcast stations (FM/AM/SW/NOAA)")
     parser.add_argument("--list-profiles", action="store_true", help="List permanently saved Location Profiles")
 
@@ -224,6 +236,36 @@ def main() -> None:
                 print("No sensor bursts decoded during this 5s window (sensors transmit periodically).")
         else:
             print(f"[-] Telemetry demodulation note: {res.get('error')}")
+        return
+
+    if args.decode_data is not None:
+        import json
+        from core.demod_engine import run_pager_data_decode, run_aprs_data_decode
+        freq_hz = int(round(args.decode_data * 1e6))
+        print(f"\nInitiating live digital data demodulation at {args.decode_data:.4f} MHz (multimon-ng)...")
+        if abs(freq_hz - 144_390_000) <= 25_000:
+            res = run_aprs_data_decode(freq_hz, duration_sec=4.0)
+            print(f"[+] APRS Telemetry result: {len(res.get('packets', []))} packet(s) captured.")
+            for p in res.get("packets", []):
+                print(f"  {p}")
+            if not res.get("packets"):
+                print("  No AX.25 packets decoded during capture window.")
+        else:
+            res = run_pager_data_decode(freq_hz, duration_sec=4.0)
+            print(f"[+] Pager/Data result: {len(res.get('messages', []))} message(s) decoded.")
+            for m in res.get("messages", []):
+                print(f"  {m}")
+            if not res.get("messages"):
+                print("  No POCSAG/FLEX messages decoded during capture window.")
+        return
+
+    if args.analyze_tv is not None:
+        import json
+        from core.demod_engine import run_atsc_tv_analysis
+        freq_hz = int(round(args.analyze_tv * 1e6))
+        print(f"\nAnalyzing ATSC digital broadcast television channel at {args.analyze_tv:.4f} MHz...")
+        res = run_atsc_tv_analysis(freq_hz)
+        print(json.dumps(res, indent=2))
         return
 
     if args.tune_freq is not None:

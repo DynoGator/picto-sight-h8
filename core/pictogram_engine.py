@@ -30,7 +30,7 @@ logger = logging.getLogger("smart_scanner.pictogram")
 
 @dataclass
 class PictogramAnalysisResult:
-    category: str               # "PICTO_GLYPH", "PICTO_RASTER", "PICTO_GEOMETRIC", "PICTO_BURST_MATRIX", "PICTO_CARRIER_COMB", "BROADCAST_WFM", "AVIATION_AM", "WEATHER_NFM", "NARROWBAND_FM", "NOISE_REJECT"
+    category: str               # "PICTO_GLYPH", "PICTO_RASTER", "PICTO_GEOMETRIC", "PICTO_BURST_MATRIX", "PICTO_CARRIER_COMB", "BROADCAST_WFM", "BROADCAST_TV", "ISM_TELEMETRY", "AVIATION_ADSB", "WEATHER_SAT_TELEM", "APRS_PACKET", "PAGER_DATA", "AVIATION_AM", "WEATHER_NFM", "NARROWBAND_FM", "NOISE_REJECT"
     raw_neural_class: str       # Direct Hailo-8 head output: glyph, raster, geometric, tone_matrix, carrier_comb, noise_reject
     label: str                  # Concise human+AI classification label
     confidence: float           # Aggregated neural confidence (0.0..1.0)
@@ -477,6 +477,42 @@ class AIPictogramClassifierManager:
             return "PICTO_GLYPH", f"Pictogram-Glyph [{eff_class}]", eff_conf
         if eff_class == "geometric" and neural_conf >= 0.76 and iq_mod == "DIGITAL_BURST":
             return "PICTO_GEOMETRIC", f"Swept-Chirp [{eff_class}]", eff_conf
+
+        # 1. ATSC Digital Broadcast Television Channels (VHF Low 2-6, VHF High 7-13, UHF 14-36)
+        try:
+            from core.demod_engine import identify_atsc_tv_channel
+            tv_info = identify_atsc_tv_channel(center_freq_hz)
+            if tv_info is not None:
+                ch, center, lo, pilot = tv_info
+                tv_conf = max(0.85, min(0.99, eff_conf + 0.10))
+                return "BROADCAST_TV", f"ATSC-TV-Ch{ch} ({eff_class})", tv_conf
+        except Exception:
+            pass
+
+        # 2. Aviation ADS-B Mode-S Transponders (1090 MHz)
+        if 1_088_000_000 <= center_freq_hz <= 1_092_000_000:
+            return "AVIATION_ADSB", f"ADS-B-1090 ({eff_class})", max(0.88, eff_conf)
+
+        # 3. Weather Satellite Telemetry (137.0 - 138.0 MHz APT/LRPT)
+        if 137_000_000 <= center_freq_hz <= 138_000_000:
+            return "WEATHER_SAT_TELEM", f"WX-Sat-Telem ({eff_class})", eff_conf
+
+        # 4. Amateur APRS Tactical Packet Radio (144.390 MHz)
+        if abs(center_freq_hz - 144_390_000) <= 25_000:
+            return "APRS_PACKET", f"APRS-AX25 ({eff_class})", max(0.85, eff_conf)
+
+        # 5. ISM IoT Telemetry Bands (433 MHz, 915 MHz, 315 MHz)
+        if 433_000_000 <= center_freq_hz <= 434_900_000:
+            return "ISM_TELEMETRY", f"Telemetry-433 ({eff_class})", eff_conf
+        if 902_000_000 <= center_freq_hz <= 928_000_000:
+            return "ISM_TELEMETRY", f"Telemetry-915 ({eff_class})", eff_conf
+        if 314_500_000 <= center_freq_hz <= 315_500_000:
+            return "ISM_TELEMETRY", f"Telemetry-315 ({eff_class})", eff_conf
+
+        # 6. Pager / POCSAG / FLEX Data Channels (152-158.8 MHz, 454-460 MHz)
+        is_pager_band = (152_000_000 <= center_freq_hz <= 158_800_000) or (454_000_000 <= center_freq_hz <= 460_000_000)
+        if is_pager_band and (iq_mod == "DIGITAL_BURST" or eff_class in ("tone_matrix", "raster", "carrier_comb")):
+            return "PAGER_DATA", f"Pager-POCSAG ({eff_class})", eff_conf
 
         # Band + IQ + Neural pattern fusion
         if 87.8e6 <= center_freq_hz <= 108.1e6:

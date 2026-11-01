@@ -14,6 +14,9 @@ from core.demod_engine import (
     identify_atsc_tv_channel,
     get_demod_profile_for_signal,
     run_telemetry_decode,
+    fm_demodulate_iq_to_pcm,
+    run_atsc_tv_analysis,
+    demodulate_signal,
 )
 
 
@@ -122,6 +125,47 @@ class TestDemodEngine(unittest.TestCase):
         )
         self.assertIn(p_aprs.tool_id, ("direwolf", "multimon_ng"))
         self.assertEqual(p_aprs.demod_label, "[📍 APRS TELEMETRY]")
+
+    def test_fm_demodulate_iq_to_pcm(self):
+        import numpy as np
+        # 10,000 synthetic IQ bytes
+        raw = np.random.randint(-128, 127, size=10_000, dtype=np.int8).tobytes()
+        pcm = fm_demodulate_iq_to_pcm(raw, in_rate=2_000_000, out_rate=22_050)
+        self.assertIsInstance(pcm, bytes)
+        self.assertGreater(len(pcm), 0)
+        # Even number of bytes (16-bit PCM)
+        self.assertEqual(len(pcm) % 2, 0)
+
+    def test_run_atsc_tv_analysis(self):
+        # Channel 14 (470 - 476 MHz, center 473 MHz, pilot 470.3094 MHz)
+        res = run_atsc_tv_analysis(473_000_000)
+        self.assertTrue(res["is_atsc_tv"])
+        self.assertEqual(res["channel"], 14)
+        self.assertEqual(res["center_freq_mhz"], 473.0)
+        self.assertAlmostEqual(res["pilot_carrier_mhz"], 470.3094, places=3)
+        self.assertEqual(res["scanner_tool"], "w_scan_cpp")
+
+        # Non-TV carrier
+        res_non = run_atsc_tv_analysis(107_900_000)
+        self.assertFalse(res_non["is_atsc_tv"])
+        self.assertIsNone(res_non["channel"])
+
+    def test_demodulate_signal_dispatch(self):
+        # 1. Telemetry dispatch
+        res_telem = demodulate_signal(433_920_000, demod="Narrow FM", band_name="433 MHz ISM Telemetry Band")
+        self.assertEqual(res_telem["tool_id"], "rtl_433")
+        self.assertEqual(res_telem["demod_data"]["type"], "TELEMETRY")
+
+        # 2. TV dispatch
+        res_tv = demodulate_signal(473_000_000, demod="Raw I/Q", band_name="UHF Digital Broadcast TV (Ch 14-36)")
+        self.assertEqual(res_tv["tool_id"], "w_scan_cpp")
+        self.assertEqual(res_tv["demod_data"]["type"], "BROADCAST_TV")
+        self.assertEqual(res_tv["demod_data"]["tv_info"]["channel"], 14)
+
+        # 3. Voice broadcast dispatch
+        res_voice = demodulate_signal(107_900_000, demod="WFM (stereo)", band_name="VHF FM Commercial Broadcast")
+        self.assertEqual(res_voice["tool_id"], "gqrx")
+        self.assertEqual(res_voice["demod_data"]["type"], "VOICE_AUDIO")
 
 
 if __name__ == "__main__":
