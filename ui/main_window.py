@@ -22,7 +22,7 @@ from typing import Dict, List, Optional, Tuple, Any
 
 import numpy as np
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QSize
-from PyQt6.QtGui import QColor, QFont, QGuiApplication, QIcon
+from PyQt6.QtGui import QColor, QFont, QGuiApplication, QIcon, QKeyEvent
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -34,7 +34,9 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -55,6 +57,7 @@ from core.bandplans import (
     SUPPORTED_DEMOD_MODES,
     evaluate_signal_demod_feasibility,
 )
+from core.demod_engine import launch_in_gui_terminal
 from core.gps_engine import get_gps_manager
 from core.gqrx_controller import GqrxController
 from core.hackrf_engine import ScanConfig
@@ -146,6 +149,10 @@ class SmartScannerMainWindow(QMainWindow):
         self._usb_reset_busy: bool = False
         self._hw_poll_inflight: bool = False
         self._anim_phase: float = 0.0
+
+        # Voice broadcast & quick search filter state ("ALL", "VOICE_BROADCAST", "ALL_VOICE")
+        self._signal_filter_mode: str = "ALL"
+        self._search_filter_text: str = ""
 
         # Layout topology state: "AUTO", "DECK" (800x480 5in touch), "STUDIO" (1080p+ HDMI)
         self._layout_preference: str = "AUTO"
@@ -586,6 +593,56 @@ class SmartScannerMainWindow(QMainWindow):
 
         vbox.addLayout(top_strip)
 
+        # Voice Broadcast & Signal Type Quick Filter Bar
+        filter_strip = QHBoxLayout()
+        filter_strip.setSpacing(4)
+        filter_strip.setContentsMargins(0, 0, 0, 0)
+
+        lbl_filter = QLabel("FIND:", panel)
+        lbl_filter.setStyleSheet("color: #64748b; font-weight: 800; font-size: 10px; letter-spacing: 0.5px;")
+        filter_strip.addWidget(lbl_filter)
+
+        self.filter_btn_group = QButtonGroup(panel)
+        self.filter_btn_group.setExclusive(True)
+
+        self.btn_filter_all = QPushButton("🌐 All Signals (0)", panel)
+        self.btn_filter_all.setObjectName("btnFilterPill")
+        self.btn_filter_all.setCheckable(True)
+        self.btn_filter_all.setChecked(True)
+        self.btn_filter_all.setToolTip("Show all viable classified frequencies in numerical order")
+        self.btn_filter_all.clicked.connect(lambda: self._set_signal_filter_mode("ALL"))
+        self.filter_btn_group.addButton(self.btn_filter_all)
+        filter_strip.addWidget(self.btn_filter_all)
+
+        self.btn_filter_voice_bc = QPushButton("📻 Voice Broadcast (0)", panel)
+        self.btn_filter_voice_bc.setObjectName("btnFilterVoiceBc")
+        self.btn_filter_voice_bc.setCheckable(True)
+        self.btn_filter_voice_bc.setToolTip(
+            "1-Click Filter: Immediately shows ONLY Voice Broadcast frequencies (FM, AM, SW & NOAA Weather) • Hotkey: 'V'"
+        )
+        self.btn_filter_voice_bc.clicked.connect(lambda: self._set_signal_filter_mode("VOICE_BROADCAST"))
+        self.filter_btn_group.addButton(self.btn_filter_voice_bc)
+        filter_strip.addWidget(self.btn_filter_voice_bc)
+
+        self.btn_filter_any_voice = QPushButton("🗣️ All Voice (0)", panel)
+        self.btn_filter_any_voice.setObjectName("btnFilterPill")
+        self.btn_filter_any_voice.setCheckable(True)
+        self.btn_filter_any_voice.setToolTip("Show all voice channels (Broadcast + Civil/Mil Airband ATC + Marine + Two-Way)")
+        self.btn_filter_any_voice.clicked.connect(lambda: self._set_signal_filter_mode("ALL_VOICE"))
+        self.filter_btn_group.addButton(self.btn_filter_any_voice)
+        filter_strip.addWidget(self.btn_filter_any_voice)
+
+        filter_strip.addSpacing(6)
+
+        self.edit_filter_search = QLineEdit(panel)
+        self.edit_filter_search.setObjectName("searchFilterEdit")
+        self.edit_filter_search.setPlaceholderText("🔍 Filter stations, MHz, labels...")
+        self.edit_filter_search.setClearButtonEnabled(True)
+        self.edit_filter_search.textChanged.connect(self._on_search_filter_changed)
+        filter_strip.addWidget(self.edit_filter_search, 1)
+
+        vbox.addLayout(filter_strip)
+
         # Numerically Ordered Clickable Signals Table
         self.table_signals = QTableWidget(panel)
         self.table_signals.setColumnCount(10)
@@ -610,6 +667,8 @@ class SmartScannerMainWindow(QMainWindow):
         self.table_signals.verticalHeader().setVisible(False)
         self.table_signals.itemSelectionChanged.connect(self._on_signal_row_selected)
         self.table_signals.cellDoubleClicked.connect(self._on_signal_row_double_clicked)
+        self.table_signals.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table_signals.customContextMenuRequested.connect(self._on_signals_context_menu)
         QScroller.grabGesture(
             self.table_signals.viewport(),
             QScroller.ScrollerGestureType.LeftMouseButtonGesture,
@@ -997,16 +1056,69 @@ class SmartScannerMainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Viable Signal Filtering & Clickable Signals Table Population
     # ------------------------------------------------------------------
+    def _set_signal_filter_mode(self, mode: str) -> None:
+        self._signal_filter_mode = mode
+        if hasattr(self, "btn_filter_all"):
+            self.btn_filter_all.setChecked(mode == "ALL")
+            self.btn_filter_voice_bc.setChecked(mode == "VOICE_BROADCAST")
+            self.btn_filter_any_voice.setChecked(mode == "ALL_VOICE")
+        self._apply_viable_filter_and_populate()
+
+    def _on_search_filter_changed(self, text: str) -> None:
+        self._search_filter_text = text.strip()
+        self._apply_viable_filter_and_populate()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_V and not (hasattr(self, "edit_filter_search") and self.edit_filter_search.hasFocus()):
+            # Hotkey 'V' toggles between Voice Broadcast only and All signals
+            new_mode = "ALL" if self._signal_filter_mode == "VOICE_BROADCAST" else "VOICE_BROADCAST"
+            self._set_signal_filter_mode(new_mode)
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
     def _apply_viable_filter_and_populate(self) -> None:
         min_snr = float(self.slider_snr.value())
         min_peak = float(self.slider_peak.value())
 
         # Keep strict ascending numerical frequency order!
         ordered_all = sorted(self.all_profiles, key=lambda p: p.frequency_hz)
-        self.filtered_profiles = [
+        viable_candidates = [
             p for p in ordered_all if (p.snr_db >= min_snr - 0.5) and (p.peak_dbm >= min_peak - 0.5)
         ]
 
+        # Calculate live counts across viable signals
+        vbc_count = sum(1 for p in viable_candidates if getattr(p, "is_voice_broadcast", False))
+        all_v_count = sum(1 for p in viable_candidates if getattr(p, "is_any_voice", False))
+
+        if hasattr(self, "btn_filter_all"):
+            self.btn_filter_all.setText(f"🌐 All Signals ({len(viable_candidates)})")
+            self.btn_filter_voice_bc.setText(f"📻 Voice Broadcast ({vbc_count})")
+            self.btn_filter_any_voice.setText(f"🗣️ All Voice ({all_v_count})")
+
+        # Apply active filter mode
+        if self._signal_filter_mode == "VOICE_BROADCAST":
+            candidates = [p for p in viable_candidates if getattr(p, "is_voice_broadcast", False)]
+        elif self._signal_filter_mode == "ALL_VOICE":
+            candidates = [p for p in viable_candidates if getattr(p, "is_any_voice", False)]
+        else:
+            candidates = list(viable_candidates)
+
+        # Apply search query
+        if self._search_filter_text:
+            q = self._search_filter_text.lower()
+            candidates = [
+                p for p in candidates
+                if (
+                    q in p.signal_name.lower()
+                    or q in f"{p.frequency_mhz:.4f}"
+                    or q in p.modulation.lower()
+                    or q in getattr(p, "voice_label", "").lower()
+                    or q in p.profile_category.lower()
+                )
+            ]
+
+        self.filtered_profiles = candidates
         total_n = len(ordered_all)
         shown_n = len(self.filtered_profiles)
         self.lbl_viable_count_badge.setText(f"VIABLE LISTED: {shown_n} / {total_n}")
@@ -1020,14 +1132,44 @@ class SmartScannerMainWindow(QMainWindow):
         self.table_signals.setRowCount(0)
         self.table_signals.setRowCount(shown_n)
         for row, p in enumerate(self.filtered_profiles):
-            # Col 0: Exact Frequency (numerically ordered)
-            f_item = QTableWidgetItem(f"{p.frequency_mhz:8.4f} MHz")
+            is_vbc = getattr(p, "is_voice_broadcast", False)
+            is_any_v = getattr(p, "is_any_voice", False)
+
+            # Col 0: Exact Frequency (numerically ordered with voice icon)
+            f_prefix = "📻 " if is_vbc else ("🗣️ " if is_any_v else "")
+            f_item = QTableWidgetItem(f"{f_prefix}{p.frequency_mhz:8.4f} MHz")
             f_item.setFont(QFont("Monospace", 10, QFont.Weight.Bold))
-            f_item.setForeground(QColor("#00f0ff"))
+            if is_vbc:
+                f_item.setForeground(QColor("#10b981"))  # Emerald Green for Voice Broadcast!
+            elif is_any_v:
+                f_item.setForeground(QColor("#38bdf8"))  # Sky Blue for Two-Way Voice
+            else:
+                f_item.setForeground(QColor("#00f0ff"))  # Cyan for Data/Other
             self.table_signals.setItem(row, 0, f_item)
 
-            # Col 1: Service Identity & AI Label
+            # Col 1: Service Identity & Voice Broadcast Label
             id_item = QTableWidgetItem(p.signal_name)
+            if is_vbc:
+                id_item.setFont(QFont("SansSerif", 9, QFont.Weight.Bold))
+                id_item.setForeground(QColor("#34d399"))  # Vibrant Emerald
+                id_item.setToolTip(
+                    f"📻 VOICE BROADCAST FREQUENCY\n"
+                    f"Identity: {p.signal_name}\n"
+                    f"Frequency: {p.frequency_mhz:.4f} MHz\n"
+                    f"Demodulation: {p.modulation}\n"
+                    f"SNR: +{p.snr_db:.1f} dB (Peak: {p.peak_dbm:.1f} dBFS)\n"
+                    f"Click [▶ TUNE GQRX] to demodulate and listen live!"
+                )
+            elif is_any_v:
+                id_item.setForeground(QColor("#bae6fd"))
+                id_item.setToolTip(
+                    f"🗣️ TWO-WAY VOICE CHANNEL\n"
+                    f"Identity: {p.signal_name}\n"
+                    f"Frequency: {p.frequency_mhz:.4f} MHz\n"
+                    f"Demodulation: {p.modulation}"
+                )
+            else:
+                id_item.setForeground(QColor("#cbd5e1"))
             self.table_signals.setItem(row, 1, id_item)
 
             # Col 2: Highlighted Gqrx Demod Mode
@@ -1049,16 +1191,18 @@ class SmartScannerMainWindow(QMainWindow):
             self.table_signals.setItem(row, 4, QTableWidgetItem(bw_txt))
 
             # Col 5: Category
-            cat_item = QTableWidgetItem(p.profile_category)
+            cat_display = "📻 Voice_Broadcast" if is_vbc else p.profile_category
+            cat_item = QTableWidgetItem(cat_display)
             cat_colors = {
                 "Broadcast_Audio": "#34d399",
+                "Voice_Broadcast": "#10b981",
                 "Aviation_Airband": "#fbbf24",
                 "Emergency_Weather": "#f87171",
                 "Pictogram_Exotic": "#f472b6",
                 "Amateur_Radio": "#c084fc",
                 "Marine_VHF": "#22d3ee",
             }
-            cat_item.setForeground(QColor(cat_colors.get(p.profile_category, "#93c5fd")))
+            cat_item.setForeground(QColor("#10b981" if is_vbc else cat_colors.get(p.profile_category, "#93c5fd")))
             self.table_signals.setItem(row, 5, cat_item)
 
             # Col 6: Hailo-8 AI Confidence & Frame Count
@@ -1076,11 +1220,25 @@ class SmartScannerMainWindow(QMainWindow):
             wf_item = QTableWidgetItem(f"{p.plot_min:.0f}..{p.plot_max:.0f} dBFS")
             self.table_signals.setItem(row, 8, wf_item)
 
-            # Col 9: Clickable Tune Gqrx Button (unparented before setCellWidget so viewport owns it)
-            btn_tune = QPushButton("▶ TUNE GQRX")
+            # Col 9: Clickable Action Button (unparented before setCellWidget so viewport owns it)
+            tool = getattr(p, "demod_tool", "gqrx")
+            if p.is_voice_broadcast:
+                btn_text = "📻 TUNE GQRX"
+            elif tool == "rtl_433":
+                btn_text = "📊 DEMOD 433"
+            elif tool == "w_scan_cpp":
+                btn_text = "📺 ATSC SCAN"
+            elif tool == "readsb":
+                btn_text = "✈️ ADS-B"
+            elif tool == "multimon_ng":
+                btn_text = "📟 PAGER"
+            else:
+                btn_text = "▶ TUNE GQRX"
+
+            btn_tune = QPushButton(btn_text)
             btn_tune.setObjectName("btnTuneRow")
             btn_tune.setMinimumWidth(104)
-            btn_tune.clicked.connect(lambda _, prof=p: self.tune_signal_in_gqrx(prof))
+            btn_tune.clicked.connect(lambda _, prof=p: self.handle_signal_demod_action(prof))
             self.table_signals.setCellWidget(row, 9, btn_tune)
 
         can_click = self._scan_unlocked and (not self.pipeline.is_scanning()) and (not self._tuning_busy)
@@ -1089,13 +1247,30 @@ class SmartScannerMainWindow(QMainWindow):
         if can_click and self.active_saved_profile is not None:
             dt_tag = self.active_saved_profile.approx_datetime_local
             loc_short = self.active_saved_profile.locality_name.split(",")[0]
-            self.lbl_lock_banner.setText(
-                f"✔ UNLOCKED [{loc_short} • {dt_tag}] — {shown_n} viable signals ready. Tap ▶ TUNE GQRX for live audio!"
-            )
-            self.lbl_lock_banner.setStyleSheet(
-                "background-color: #062e1e; border: 1px solid #10b981; border-radius: 4px; "
-                "color: #34d399; padding: 4px 8px; font-weight: bold;"
-            )
+            if self._signal_filter_mode == "VOICE_BROADCAST":
+                self.lbl_lock_banner.setText(
+                    f"✔ FILTER: [📻 Voice Broadcast] — Showing {shown_n} broadcast stations (out of {len(viable_candidates)} viable). Tap ▶ TUNE GQRX for live audio!"
+                )
+                self.lbl_lock_banner.setStyleSheet(
+                    "background-color: #052e16; border: 1px solid #10b981; border-radius: 4px; "
+                    "color: #34d399; padding: 4px 8px; font-weight: bold;"
+                )
+            elif self._signal_filter_mode == "ALL_VOICE":
+                self.lbl_lock_banner.setText(
+                    f"✔ FILTER: [🗣️ All Voice] — Showing {shown_n} voice channels (out of {len(viable_candidates)} viable). Tap ▶ TUNE GQRX for live audio!"
+                )
+                self.lbl_lock_banner.setStyleSheet(
+                    "background-color: #082f49; border: 1px solid #0284c7; border-radius: 4px; "
+                    "color: #38bdf8; padding: 4px 8px; font-weight: bold;"
+                )
+            else:
+                self.lbl_lock_banner.setText(
+                    f"✔ UNLOCKED [{loc_short} • {dt_tag}] — {shown_n} viable signals ready. Tap ▶ TUNE GQRX for live audio!"
+                )
+                self.lbl_lock_banner.setStyleSheet(
+                    "background-color: #062e1e; border: 1px solid #10b981; border-radius: 4px; "
+                    "color: #34d399; padding: 4px 8px; font-weight: bold;"
+                )
 
     def _on_signal_row_selected(self) -> None:
         row = self.table_signals.currentRow()
@@ -1118,7 +1293,78 @@ class SmartScannerMainWindow(QMainWindow):
 
     def _on_signal_row_double_clicked(self, row: int, _col: int) -> None:
         if 0 <= row < len(self.filtered_profiles):
-            self.tune_signal_in_gqrx(self.filtered_profiles[row])
+            self.handle_signal_demod_action(self.filtered_profiles[row])
+
+    def _on_signals_context_menu(self, pos) -> None:
+        row = self.table_signals.rowAt(pos.y())
+        if not (0 <= row < len(self.filtered_profiles)):
+            return
+        p = self.filtered_profiles[row]
+        tool = getattr(p, "demod_tool", "gqrx")
+        menu = QMenu(self)
+        act_gqrx = menu.addAction(f"📻 Tune in Gqrx SDR ({p.modulation})")
+        act_tool = None
+        if tool != "gqrx":
+            act_tool = menu.addAction(f"🚀 Launch Dedicated Decoder ({tool}) in Terminal")
+        menu.addSeparator()
+        act_copy_f = menu.addAction(f"📋 Copy Frequency ({p.frequency_mhz:.4f} MHz)")
+        act_copy_cmd = menu.addAction("📋 Copy Demod Command")
+
+        action = menu.exec(self.table_signals.viewport().mapToGlobal(pos))
+        if action == act_gqrx:
+            self.tune_signal_in_gqrx(p)
+        elif action == act_tool and act_tool is not None:
+            self.handle_signal_demod_action(p)
+        elif action == act_copy_f:
+            cb = QApplication.clipboard()
+            if cb:
+                cb.setText(f"{p.frequency_mhz:.4f}")
+        elif action == act_copy_cmd:
+            cb = QApplication.clipboard()
+            if cb:
+                cmd = getattr(p, "demod_cmd", "") or "gqrx"
+                cb.setText(cmd)
+
+    def handle_signal_demod_action(self, profile: ClassifiedSignalProfile) -> None:
+        """Dispatches signal demodulation to specialized digital/TV decoder or Gqrx SDR receiver."""
+        if self.pipeline.is_scanning():
+            QMessageBox.warning(
+                self,
+                "SDR Locked by Active Scan",
+                "Wait for all scan layers and profile refinement to complete before opening demodulator.",
+            )
+            return
+        if self._tuning_busy or self._usb_reset_busy:
+            return
+
+        tool = getattr(profile, "demod_tool", "gqrx")
+        # If specialized digital telemetry / TV scanner tool and not primarily analog voice:
+        if tool in ("rtl_433", "w_scan_cpp", "readsb", "multimon_ng", "direwolf") and not profile.is_voice_broadcast:
+            # Terminate Gqrx cleanly first so HackRF USB transceiver is unlocked
+            if self.gqrx_ctrl.is_running():
+                self.gqrx_ctrl.terminate()
+                time.sleep(0.3)
+
+            cmd = getattr(profile, "demod_cmd", "")
+            title = f"{profile.voice_label or profile.signal_name} ({profile.frequency_mhz:.3f} MHz)"
+            ok = launch_in_gui_terminal(cmd, window_title=title)
+            if ok:
+                self.dual_progress.set_progress(
+                    100.0,
+                    100.0,
+                    f"Launched {tool} terminal for {profile.frequency_mhz:.3f} MHz...",
+                    busy=False,
+                )
+                self.pill_gqrx.set_telemetry(
+                    f"{tool.upper()} LIVE",
+                    pct=100.0,
+                    accent_hex="#10b981",
+                    pulsing=False,
+                )
+                return
+
+        # Voice broadcasts or analog signals tune live in Gqrx
+        self.tune_signal_in_gqrx(profile)
 
     # ------------------------------------------------------------------
     # Non-Blocking Gqrx Translation, Launch & Live Verification

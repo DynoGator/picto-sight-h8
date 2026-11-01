@@ -24,7 +24,11 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
-from core.bandplans import SUPPORTED_DEMOD_MODES, evaluate_signal_demod_feasibility
+from core.bandplans import (
+    SUPPORTED_DEMOD_MODES,
+    classify_voice_broadcast,
+    evaluate_signal_demod_feasibility,
+)
 from core.gps_engine import get_gps_manager
 from core.gqrx_controller import GqrxController
 from core.hackrf_engine import ScanConfig
@@ -80,6 +84,7 @@ def run_headless_scan(
     demod: str,
     frames: int,
     auto_tune_top: bool = False,
+    voice_only: bool = False,
 ) -> int:
     cfg = ScanConfig.from_mode(
         mode=mode,
@@ -97,6 +102,8 @@ def run_headless_scan(
         f"Range: {cfg.freq_min_mhz}-{cfg.freq_max_mhz} MHz | Min SNR: +{cfg.min_snr_db:.1f} dB | "
         f"Min Peak: {cfg.min_peak_dbfs:.0f} dBFS | Demod: {cfg.demod_mode} | L3 Frames/MHz: {cfg.l3_frames_per_mhz}"
     )
+    if voice_only:
+        print("Filter: VOICE BROADCAST ONLY (--voice-only)")
     print("=" * 88)
 
     gps = get_gps_manager().refresh_now()
@@ -123,26 +130,32 @@ def run_headless_scan(
         pipeline.picto_mgr.close()
 
     elapsed = time.perf_counter() - t0
-    print(f"\n\nScan finished in {elapsed:.2f}s — {len(profiles)} viable signals classified & ordered.\n")
+    vbc_count = sum(1 for p in profiles if getattr(p, "is_voice_broadcast", False))
+    print(f"\n\nScan finished in {elapsed:.2f}s — {len(profiles)} viable signals ({vbc_count} Voice Broadcast) ordered.\n")
     if saved is not None:
         print(f"Permanent Location Profile : {saved.json_path}")
         print(f"Profile Bookmarks Snapshot : {saved.bookmarks_csv_path}")
 
-    print("-" * 116)
+    if voice_only:
+        profiles = [p for p in profiles if getattr(p, "is_voice_broadcast", False)]
+        print(f"\n[FILTERED TO {len(profiles)} VOICE BROADCAST FREQUENCIES ONLY]\n")
+
+    print("-" * 140)
     print(
-        f"{'FREQ (MHz)':<12} | {'SERVICE / IDENTITY & AI CLASS':<44} | {'DEMOD':<12} | "
-        f"{'SNR / PEAK':<18} | {'OBW':<9} | {'GAINS'}"
+        f"{'FREQ (MHz)':<12} | {'TYPE / LABEL':<26} | {'DEMOD TOOL':<12} | {'SERVICE / IDENTITY & AI CLASS':<36} | "
+        f"{'DEMOD':<12} | {'SNR / PEAK':<16} | {'OBW'}"
     )
-    print("-" * 116)
+    print("-" * 140)
     for p in profiles:
-        sp = f"+{p.snr_db:4.1f}dB/{p.peak_dbm:5.1f}dBFS"
+        sp = f"+{p.snr_db:4.1f}dB/{p.peak_dbm:5.1f}dB"
         bw = f"{p.bandwidth_hz / 1000.0:5.1f}kHz"
-        gn = f"IF:{p.lna_gain} BB:{p.vga_gain} RF:{p.amp_gain}"
+        v_lbl = getattr(p, "voice_label", "[📻 VOICE BROADCAST]" if getattr(p, "is_voice_broadcast", False) else "[📊 OTHER]")
+        tool = getattr(p, "demod_tool", "gqrx")
         print(
-            f"{p.frequency_mhz:<12.4f} | {p.signal_name[:44]:<44} | {p.modulation[:12]:<12} | "
-            f"{sp:<18} | {bw:<9} | {gn}"
+            f"{p.frequency_mhz:<12.4f} | {v_lbl:<26} | {tool:<12} | {p.signal_name[:36]:<36} | {p.modulation[:12]:<12} | "
+            f"{sp:<16} | {bw}"
         )
-    print("-" * 116)
+    print("-" * 128)
 
     if auto_tune_top and profiles:
         best = max(profiles, key=lambda x: x.snr_db)
@@ -178,6 +191,13 @@ def main() -> None:
     parser.add_argument("--frames", type=int, default=3, help="Layer 3 spectrogram frames per 1 MHz (>=3)")
     parser.add_argument("--tune-top", action="store_true", help="Tune strongest signal in Gqrx after CLI scan")
     parser.add_argument("--tune-freq", type=float, default=None, help="Directly tune a frequency (MHz) in Gqrx")
+    parser.add_argument(
+        "--telemetry",
+        type=float,
+        default=None,
+        help="Demodulate live IoT/weather/meter sensor telemetry at given frequency in MHz using rtl_433 and HackRF",
+    )
+    parser.add_argument("--voice-only", action="store_true", help="Filter output list to only voice broadcast stations (FM/AM/SW/NOAA)")
     parser.add_argument("--list-profiles", action="store_true", help="List permanently saved Location Profiles")
 
     args = parser.parse_args()
@@ -190,6 +210,22 @@ def main() -> None:
             print(f"  - {item['display_title']} -> {item['json_path']}")
         return
 
+    if args.telemetry is not None:
+        import json
+        from core.demod_engine import run_telemetry_decode
+        freq_hz = int(round(args.telemetry * 1e6))
+        print(f"\nInitiating live HackRF telemetry decode at {args.telemetry:.4f} MHz via rtl_433 (5s capture)...")
+        res = run_telemetry_decode(freq_hz, duration_sec=5.0)
+        if res["success"]:
+            print(f"\n[+] Captured {res['count']} decoded telemetry packet(s):")
+            for pkt in res["packets"]:
+                print(json.dumps(pkt, indent=2))
+            if not res["packets"]:
+                print("No sensor bursts decoded during this 5s window (sensors transmit periodically).")
+        else:
+            print(f"[-] Telemetry demodulation note: {res.get('error')}")
+        return
+
     if args.tune_freq is not None:
         freq_hz = int(round(args.tune_freq * 1e6))
         feas = evaluate_signal_demod_feasibility(
@@ -198,12 +234,21 @@ def main() -> None:
             measured_bw_hz=180_000.0 if 87.9e6 <= freq_hz <= 108.0e6 else 16_000.0,
             demod_override=args.demod if args.demod in SUPPORTED_DEMOD_MODES else "AUTO (Band + AI)",
         )
+        v_info = classify_voice_broadcast(
+            freq_hz=freq_hz,
+            demod=feas["demod"],
+            band_name=feas["band_name"],
+            service_type="",
+            pic_label="DirectTune",
+            profile_category=feas["profile_category"],
+            obw_hz=float(feas["passband_hz"]),
+        )
         prof = ClassifiedSignalProfile(
             frequency_hz=freq_hz,
             frequency_mhz=round(freq_hz / 1e6, 4),
             raw_measured_hz=float(freq_hz),
             carrier_offset_hz=0.0,
-            signal_name=f"{args.tune_freq:.4f} MHz Direct Tune ({feas['demod']})",
+            signal_name=f"{v_info['voice_label']} {args.tune_freq:.4f} MHz Direct Tune ({feas['demod']})",
             profile_category=feas["profile_category"],
             modulation=feas["demod"],
             rigctl_mode=feas["rigctl_mode"],
@@ -233,6 +278,12 @@ def main() -> None:
             legal_notes=feas["legal_notes"],
             locality_ref="Direct CLI",
             timestamp_iso=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            is_voice_broadcast=v_info["is_voice_broadcast"],
+            is_any_voice=v_info["is_any_voice"],
+            voice_label=v_info["voice_label"],
+            demod_tool="gqrx",
+            demod_cmd="gqrx",
+            atsc_channel=None,
         )
         ctrl = GqrxController()
         res = ctrl.tune_and_launch(prof, all_profiles=[prof], organizer=SignalProfileOrganizer())
@@ -249,6 +300,7 @@ def main() -> None:
             demod=args.demod,
             frames=args.frames,
             auto_tune_top=args.tune_top,
+            voice_only=args.voice_only,
         )
         os._exit(rc)
 

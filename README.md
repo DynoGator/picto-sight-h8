@@ -5,7 +5,8 @@
 [![NPU: Hailo-8 26 TOPS](https://img.shields.io/badge/NPU-Hailo--8%2026%20TOPS%20PCIe-00e676.svg)](#layer-3--1000-mhz-multi-frame-hailo-8-ai-pictogram-classification)
 [![SDR: HackRF One](https://img.shields.io/badge/SDR-HackRF%20One%20(1--6000%20MHz)-ffb300.svg)](#strict-1-at-a-time-sdr-arbiter--non-root-usb-self-healing)
 [![Receiver: Gqrx 2.17+](https://img.shields.io/badge/Receiver-Gqrx%202.17%2B%20Auto--Tuner-7c4dff.svg)](#native-gqrx-217-profile-synthesis--verified-live-tuning)
-[![Tests: 22 Passing](https://img.shields.io/badge/Tests-22%2F22%20Passing-brightgreen.svg)](#verification--test-suite)
+[![Demod: rtl--433 / readsb / multimon](https://img.shields.io/badge/Demod-rtl--433%20%7C%20readsb%20%7C%20w--scan-00b0ff.svg)](#multi-tool-demodulation-engine--telemetry-tv--voice-data)
+[![Tests: 27 Passing](https://img.shields.io/badge/Tests-27%2F27%20Passing-brightgreen.svg)](#verification--test-suite)
 
 **Picto-Sight H8** is a production-grade, hardware-accelerated **AI Smart RF Scanner, Multi-Frame Spectrogram Pictogram Classifier, and Automated Gqrx SIGINT Controller** built for **Raspberry Pi 5** equipped with a **Hailo-8 (26 TOPS PCIe) AI Accelerator**, **HackRF One SDR**, and **USB u-blox GNSS** receiver.
 
@@ -81,6 +82,21 @@ flowchart TD
 - **Calibrated Waterfall Bounds, Gains & Live Audio**: Synthesizes optimal LNA (`0–40 dB`, 8 dB steps), IF VGA (`0–62 dB`, 2 dB steps), `8192`-bin FFT waterfall floor/ceiling (`-96..-22 dBFS`), squelch (`OPEN -150 dBFS`, `AUTO` floor+margin, or custom slider override), and PipeWire default sink audio at `0 dB` (`gain=0` in Gqrx `0.1 dB` units).
 - **Live TCP `127.0.0.1:7356` IQ Stream Verification**: Every click/tap verifies live DSP demodulation via Gqrx's remote-control socket (`f`, `M`, `L`, `l STRENGTH` > `-120 dBFS`), seamlessly fast-switching already-open Gqrx instances when sample rate and gains match—or performing an automated USB reset + clean relaunch if a cold start is needed.
 
+### 4. Voice Broadcast Quick-Finder & Prominent Visual Labels
+- **High-Visibility Badges**: Voice broadcast channels (Commercial FM, AM, Shortwave, and NOAA Weather Radio) are prominently tagged with `[📻 VOICE BROADCAST]`, `[🎙️ WX VOICE BROADCAST]`, and `[🎙️ ATIS VOICE BROADCAST]`.
+- **1-Click Filter Toolbar**: Filter pills above the signals table (`[ 📻 Voice Broadcast ]`, `[ 🗣️ All Voice ]`, `[ 🌐 All Signals ]`, and live search) let the operator instantly isolate voice stations with 1 click or keyboard shortcut `V`.
+- **Gqrx Bookmarks Export**: Voice broadcasts are tagged with dedicated `#10b981` (emerald green) bookmarks for instant discovery in Gqrx's Pandapter.
+
+### 5. Multi-Tool Demodulation Engine (`core/demod_engine.py`)
+Picto-Sight H8 translates and dispatches classified RF signals directly to specialized software demodulators:
+- **Commercial & Amateur Voice / Broadcast Audio**: Instant 1-click launch and live retuning in **Gqrx 2.17+** with calibrated LNA/VGA gains and DSP passbands.
+- **IoT / ISM Telemetry (433 / 915 / 315 MHz)**: Native hardware decoding via **`rtl_433`** over SoapySDR HackRF (`rtl_433 -d driver=hackrf -f <FREQ>`). Decodes over 200 telemetry protocols including weather stations, TPMS tire pressure sensors, electricity/water smart meters, and remote telemetry sensors.
+- **Digital Broadcast Television**: North American **ATSC 1.0 / ATSC 3.0** channel identification across VHF Low (Ch 2–6), VHF High (Ch 7–13), and UHF (Ch 14–36), calculating exact channel boundaries, center frequencies, and 8VSB pilot carriers (310 kHz above lower edge) paired with **`w_scan_cpp`** and GNU Radio DTV blocks.
+- **Aviation ADS-B Mode-S (1090 MHz)**: Decodes real-time aircraft altitude, flight IDs, squawk codes, and position telemetry via **`readsb`** Mode-S receiver.
+- **Emergency Weather & Pager Data**: POCSAG 512/1200/2400 and Motorola FLEX pager decoding, plus EAS emergency weather alerts via **`multimon-ng`**.
+- **Amateur APRS Packet Radio (144.390 MHz)**: Decodes AX.25 tactical telemetry beacons via **`direwolf`** and `multimon-ng`.
+- **Audio FSK Modems**: Decodes Bell 103/202, RTTY, and NOAA SAME weather alert headers via **`minimodem`**.
+
 ---
 
 ## Hardware & Software Requirements
@@ -97,6 +113,7 @@ flowchart TD
 ### System Packages
 - `hackrf` (`hackrf_info`, `hackrf_sweep`, `hackrf_transfer`)
 - `gqrx-sdr` (Gqrx 2.17+)
+- `rtl-433`, `multimon-ng`, `direwolf`, `minimodem`, `readsb`, `w-scan-cpp`, `sox` (telemetry, TV, and digital data demodulators)
 - `hailo-all` (`hailort`, `python3-hailort`, `hailo-models` providing `/usr/share/hailo-models/resnet_v1_50_h8l.hef` or `resnet_v1_50_h8.hef`)
 - `gpsd`, `gpsd-clients`
 - `python3-pyqt6`, `python3-pyqt6.qtsvg`, `python3-opencv`, `python3-numpy`, `python3-serial`, `pulseaudio-utils` (PipeWire `pactl`)
@@ -152,7 +169,13 @@ chmod +x install.sh
 ./launch_scanner.sh --tune-index 1
 
 # Tune Gqrx directly to a specific frequency (MHz) using its classified profile settings
-./launch_scanner.sh --tune-mhz 107.9
+./launch_scanner.sh --tune-freq 107.9
+
+# Filter headless scan output exclusively to voice broadcast stations (FM/AM/NOAA)
+./launch_scanner.sh --scan --mode quick --voice-only
+
+# Demodulate live IoT/weather/meter sensor telemetry at 433.92 MHz via rtl_433 & HackRF
+./launch_scanner.sh --telemetry 433.92
 ```
 
 ### Importing Bookmarks Directly Inside Gqrx
@@ -174,6 +197,7 @@ picto-sight-h8/
 ├── autostart_scanner.sh                     # Boot autostart supervisor for Wayland / labwc
 ├── core/
 │   ├── bandplans.py                         # FCC / ITU-R1 / ITU-R3 bandplans, channel snapping & FFT bounds
+│   ├── demod_engine.py                      # Multi-tool demodulator dispatcher (rtl_433, readsb, multimon-ng, w_scan_cpp)
 │   ├── gps_engine.py                        # USB u-blox GNSS NMEA + gpsd & offline locality cache
 │   ├── gqrx_controller.py                   # Native Gqrx 2.17+ INI synthesizer, PipeWire & TCP 7356 controller
 │   ├── hackrf_engine.py                     # SIGINT-safe HackRF sweep, 2 MSPS IQ capture & clock-spur filter
@@ -193,7 +217,7 @@ picto-sight-h8/
 ├── docs/images/                             # High-resolution HDMI Studio & 5" DSI Touch screenshots
 ├── profiles/                                # Runtime saved Location Profiles (gitignored for GPS privacy)
 ├── export/                                  # Runtime Gqrx bookmarks & JSON exports (gitignored)
-└── tests/                                   # 22 unit & live hardware integration tests
+└── tests/                                   # 27 unit & live hardware integration tests
 ```
 
 ---
@@ -207,6 +231,8 @@ Run the complete unit and hardware integration test suite with `pytest`:
 ```
 
 The test suite verifies:
+- Voice broadcast classification, NOAA WX, ATIS voice badges, and FCC/ITU bandplan regulation ([`tests/test_bandplans.py`](tests/test_bandplans.py))
+- Multi-tool demodulator engine, ATSC TV channel mapping (Ch 2–36, 8VSB pilot), and tool detection ([`tests/test_demod_engine.py`](tests/test_demod_engine.py))
 - Passive `sysfs` HackRF detection, `gr-osmosdr` serial suffix formatting (`hackrf=<suffix>`), non-root `USBDEVFS_RESET` recovery, and `recentconfig.cfg` / `crash=false` sanitization ([`tests/test_smart_scanner_v2.py`](tests/test_smart_scanner_v2.py))
 - `8192`-FFT waterfall floor/ceiling normalization, low-HF (`< 10 MHz`) `-150 kHz` LO offset, internal clock-spur rejection, and `1–6000 MHz` bin-width scaling ([`tests/test_bandplans.py`](tests/test_bandplans.py), [`tests/test_smart_scanner_v2.py`](tests/test_smart_scanner_v2.py))
 - USB u-blox GNSS NMEA parsing, Maidenhead grid calculation, and reboot-persistent locality caching ([`tests/test_gps.py`](tests/test_gps.py))

@@ -216,6 +216,60 @@ QPushButton#btnTuneRow:hover {{
     border-color: #7dd3fc;
 }}
 
+/* Quick Voice Broadcast & Category Filter Pills */
+QPushButton#btnFilterPill {{
+    background-color: #0c1626;
+    border: 1px solid #1e3a5f;
+    border-radius: 4px;
+    color: #94a3b8;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 3px 8px;
+}}
+QPushButton#btnFilterPill:hover {{
+    background-color: #14243b;
+    border-color: #38bdf8;
+    color: #f1f5f9;
+}}
+QPushButton#btnFilterPill:checked {{
+    background-color: #0369a1;
+    border: 1px solid #38bdf8;
+    color: #ffffff;
+}}
+
+QPushButton#btnFilterVoiceBc {{
+    background-color: #062e1e;
+    border: 1px solid #065f46;
+    border-radius: 4px;
+    color: #6ee7b7;
+    font-size: 11px;
+    font-weight: 800;
+    padding: 3px 8px;
+}}
+QPushButton#btnFilterVoiceBc:hover {{
+    background-color: #064e3b;
+    border-color: #10b981;
+    color: #ffffff;
+}}
+QPushButton#btnFilterVoiceBc:checked {{
+    background-color: #047857;
+    border: 1px solid #34d399;
+    color: #ffffff;
+}}
+
+QLineEdit#searchFilterEdit {{
+    background-color: #08111e;
+    border: 1px solid #1e3a5f;
+    border-radius: 4px;
+    color: #f1f5f9;
+    padding: 3px 7px;
+    font-size: 11px;
+}}
+QLineEdit#searchFilterEdit:focus {{
+    border-color: #00f0ff;
+    background-color: #0b1728;
+}}
+
 QPushButton#btnReleaseGqrx {{
     background-color: #451a03;
     border: 1px solid #f59e0b;

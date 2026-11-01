@@ -42,7 +42,9 @@ GQRX_DEMOD_SPECS: Dict[str, Tuple[str, int, int, int, int]] = {
 BOOKMARK_CATEGORY_COLORS: Dict[str, str] = {
     "Active_Target":     "#00ffff",
     "SmartScanner":      "#38bdf8",
+    "Voice_Broadcast":   "#10b981",
     "Broadcast_Audio":   "#10b981",
+    "Broadcast_TV":      "#e11d48",
     "Aviation_Airband":  "#f59e0b",
     "Emergency_Weather": "#ef4444",
     "Amateur_Radio":     "#a855f7",
@@ -50,6 +52,7 @@ BOOKMARK_CATEGORY_COLORS: Dict[str, str] = {
     "Public_Safety":     "#3b82f6",
     "Pictogram_Exotic":  "#ec4899",
     "ISM_Telemetry":     "#eab308",
+    "Data_Telemetry":    "#64748b",
 }
 
 NOAA_WX_CHANNELS_HZ: Tuple[int, ...] = (
@@ -105,6 +108,22 @@ BANDPLANS_FCC_US: List[BandDefinition] = [
         filter_low_cut=-6_500, filter_high_cut=6_500, fm_maxdev_hz=5_000,
         is_legal_demod=True, legal_notes="Legal amateur radio reception",
         profile_category="Amateur_Radio",
+    ),
+    BandDefinition(
+        start_hz=54_000_000, end_hz=72_000_000,
+        band_name="VHF Low Broadcast TV (Ch 2-4)", service_type="ATSC Digital Television",
+        primary_demod="Raw I/Q", channel_step_hz=6_000_000, default_bandwidth_hz=6_000_000,
+        filter_low_cut=-20_000, filter_high_cut=20_000, fm_maxdev_hz=0,
+        is_legal_demod=True, legal_notes="Open ATSC terrestrial digital television (FCC Part 73)",
+        profile_category="Broadcast_TV",
+    ),
+    BandDefinition(
+        start_hz=76_000_000, end_hz=88_000_000,
+        band_name="VHF Low Broadcast TV (Ch 5-6)", service_type="ATSC Digital Television",
+        primary_demod="Raw I/Q", channel_step_hz=6_000_000, default_bandwidth_hz=6_000_000,
+        filter_low_cut=-20_000, filter_high_cut=20_000, fm_maxdev_hz=0,
+        is_legal_demod=True, legal_notes="Open ATSC terrestrial digital television (FCC Part 73)",
+        profile_category="Broadcast_TV",
     ),
     BandDefinition(
         start_hz=87_900_000, end_hz=108_000_000,
@@ -179,6 +198,14 @@ BANDPLANS_FCC_US: List[BandDefinition] = [
         profile_category="Public_Safety",
     ),
     BandDefinition(
+        start_hz=174_000_000, end_hz=216_000_000,
+        band_name="VHF High Broadcast TV (Ch 7-13)", service_type="ATSC Digital Television",
+        primary_demod="Raw I/Q", channel_step_hz=6_000_000, default_bandwidth_hz=6_000_000,
+        filter_low_cut=-20_000, filter_high_cut=20_000, fm_maxdev_hz=0,
+        is_legal_demod=True, legal_notes="Open ATSC terrestrial digital television (FCC Part 73)",
+        profile_category="Broadcast_TV",
+    ),
+    BandDefinition(
         start_hz=222_000_000, end_hz=225_000_000,
         band_name="1.25m Amateur Band", service_type="Amateur Radio",
         primary_demod="Narrow FM", channel_step_hz=20_000, default_bandwidth_hz=15_000,
@@ -219,12 +246,20 @@ BANDPLANS_FCC_US: List[BandDefinition] = [
         profile_category="Public_Safety",
     ),
     BandDefinition(
-        start_hz=450_000_000, end_hz=512_000_000,
+        start_hz=450_000_000, end_hz=470_000_000,
         band_name="UHF Public Safety & Commercial LMR", service_type="Dispatch / Transit / Utilities",
         primary_demod="Narrow FM", channel_step_hz=12_500, default_bandwidth_hz=12_500,
         filter_low_cut=-5_500, filter_high_cut=5_500, fm_maxdev_hz=2_500,
         is_legal_demod=True, legal_notes="Unencrypted analog LMR channels legal to monitor",
         profile_category="Public_Safety",
+    ),
+    BandDefinition(
+        start_hz=470_000_000, end_hz=608_000_000,
+        band_name="UHF Digital Broadcast TV (Ch 14-36)", service_type="ATSC 1.0 / ATSC 3.0 Digital TV",
+        primary_demod="Raw I/Q", channel_step_hz=6_000_000, default_bandwidth_hz=6_000_000,
+        filter_low_cut=-20_000, filter_high_cut=20_000, fm_maxdev_hz=0,
+        is_legal_demod=True, legal_notes="Open ATSC terrestrial digital television (FCC Part 73)",
+        profile_category="Broadcast_TV",
     ),
     BandDefinition(
         start_hz=769_000_000, end_hz=869_000_000,
@@ -485,3 +520,201 @@ def evaluate_signal_demod_feasibility(
         "legal_notes": legal_notes,
         "profile_category": category,
     }
+
+
+def classify_voice_broadcast(
+    freq_hz: float,
+    demod: str = "",
+    band_name: str = "",
+    service_type: str = "",
+    pic_label: str = "",
+    profile_category: str = "",
+    obw_hz: float = 0.0,
+) -> Dict[str, Any]:
+    """
+    Identifies voice broadcast channels and general voice transmissions across the RF spectrum.
+    Returns structured categorization, prominent visual label with emoji badge, tag, and UI colors.
+    """
+    f_hz = float(freq_hz)
+
+    # 0. Explicit Data, Telemetry, and Beacon allocations (Non-Voice)
+    data_keywords = ("telemetry", "transponder", "satellite downlink", "ads-b", "lora", "sensor", "meshtastic")
+    if profile_category in ("ISM_Telemetry", "Telemetry", "Data") or any(
+        k in band_name.lower() or k in service_type.lower() for k in data_keywords
+    ):
+        return {
+            "is_voice_broadcast": False,
+            "is_any_voice": False,
+            "voice_label": "[📊 DATA / TELEM]",
+            "short_label": "DATA/TELEM",
+            "voice_tag": "Data_Telemetry",
+            "color": "#64748b",
+            "bg": "#1e293b",
+        }
+
+    # 0a. ATSC Digital Broadcast Television (6 MHz Digital Multiplex)
+    if profile_category == "Broadcast_TV" or any(k in band_name.upper() for k in ("BROADCAST TV", "ATSC", "DIGITAL TV")):
+        return {
+            "is_voice_broadcast": False,
+            "is_any_voice": False,
+            "voice_label": "[📺 BROADCAST TV]",
+            "short_label": "BROADCAST TV",
+            "voice_tag": "Broadcast_TV",
+            "color": "#e11d48",  # rose / red
+            "bg": "#4c0519",
+        }
+
+    # 1. Commercial FM Broadcast (87.5 - 108.0 MHz, OIRT 65.8 - 74.0 MHz)
+    # Primary public voice/audio broadcast
+    if (87_500_000 <= f_hz <= 108_100_000) or (65_800_000 <= f_hz <= 74_000_000) or ("WFM" in demod and obw_hz >= 75_000):
+        return {
+            "is_voice_broadcast": True,
+            "is_any_voice": True,
+            "voice_label": "[📻 VOICE BROADCAST]",
+            "short_label": "VOICE BROADCAST",
+            "voice_tag": "Voice_Broadcast",
+            "color": "#10b981",  # emerald green
+            "bg": "#064e3b",
+        }
+
+    # 2. Aviation Automated Terminal Information / Weather Voice Broadcast (ATIS / AWOS)
+    if (118_000_000 <= f_hz <= 136_975_000) and any(k in band_name.upper() or k in pic_label.upper() for k in ("ATIS", "AWOS", "ASOS")):
+        return {
+            "is_voice_broadcast": True,
+            "is_any_voice": True,
+            "voice_label": "[🎙️ ATIS VOICE BROADCAST]",
+            "short_label": "ATIS BROADCAST",
+            "voice_tag": "Voice_Broadcast",
+            "color": "#f59e0b",  # amber
+            "bg": "#451a03",
+        }
+
+    # 3. NOAA All-Hazards Emergency Weather Radio (162.400 - 162.550 MHz)
+    # Continuous 24/7 automated voice broadcast
+    if (162_385_000 <= f_hz <= 162_565_000) or ("NOAA" in band_name.upper()) or ("NOAA" in service_type.upper()) or (f_hz > 160_000_000 and "WEATHER" in band_name.upper()) or "WX" in pic_label.upper():
+        return {
+            "is_voice_broadcast": True,
+            "is_any_voice": True,
+            "voice_label": "[🎙️ WX VOICE BROADCAST]",
+            "short_label": "WX BROADCAST",
+            "voice_tag": "Voice_Broadcast",
+            "color": "#06b6d4",  # cyan
+            "bg": "#083344",
+        }
+
+    # 4. Medium-Wave AM Commercial Broadcast (520 - 1720 kHz)
+    if 520_000 <= f_hz <= 1_720_000:
+        return {
+            "is_voice_broadcast": True,
+            "is_any_voice": True,
+            "voice_label": "[📻 AM VOICE BROADCAST]",
+            "short_label": "AM BROADCAST",
+            "voice_tag": "Voice_Broadcast",
+            "color": "#10b981",
+            "bg": "#064e3b",
+        }
+
+    # 5. Shortwave International Broadcast Bands
+    sw_ranges = [
+        (3_900_000, 4_000_000), (5_900_000, 6_200_000), (7_200_000, 7_450_000),
+        (9_400_000, 9_900_000), (11_600_000, 12_100_000), (13_570_000, 13_870_000),
+        (15_100_000, 15_800_000), (17_480_000, 17_900_000), (21_450_000, 21_850_000),
+    ]
+    if any(lo <= f_hz <= hi for lo, hi in sw_ranges) and demod in ("AM", "AM-Sync", "USB", "LSB"):
+        return {
+            "is_voice_broadcast": True,
+            "is_any_voice": True,
+            "voice_label": "[📻 SW VOICE BROADCAST]",
+            "short_label": "SW BROADCAST",
+            "voice_tag": "Voice_Broadcast",
+            "color": "#10b981",
+            "bg": "#064e3b",
+        }
+
+    # 6. Civil & Military Aviation Voice (Air Traffic Control)
+    if (118_000_000 <= f_hz <= 136_975_000) or (225_000_000 <= f_hz <= 380_000_000 and "AM" in demod):
+        return {
+            "is_voice_broadcast": False,
+            "is_any_voice": True,
+            "voice_label": "[✈️ AIR VOICE (ATC)]",
+            "short_label": "AIR VOICE",
+            "voice_tag": "Aviation_Voice",
+            "color": "#f59e0b",
+            "bg": "#451a03",
+        }
+
+    # 7. Marine VHF Voice
+    if 156_000_000 <= f_hz <= 162_025_000 and "Narrow FM" in demod:
+        return {
+            "is_voice_broadcast": False,
+            "is_any_voice": True,
+            "voice_label": "[⚓ MARINE VOICE]",
+            "short_label": "MARINE VOICE",
+            "voice_tag": "Marine_Voice",
+            "color": "#06b6d4",
+            "bg": "#083344",
+        }
+
+    # 8. Civilian Two-Way Voice (CB Radio 27MHz, FRS/GMRS 462/467MHz, MURS 151MHz)
+    if (26_965_000 <= f_hz <= 27_405_000) or (462_550_000 <= f_hz <= 467_725_000) or (151_820_000 <= f_hz <= 151_940_000):
+        return {
+            "is_voice_broadcast": False,
+            "is_any_voice": True,
+            "voice_label": "[🗣️ 2-WAY VOICE]",
+            "short_label": "2-WAY VOICE",
+            "voice_tag": "TwoWay_Voice",
+            "color": "#a855f7",
+            "bg": "#3b0764",
+        }
+
+    # 9. Amateur Radio Voice
+    ham_voice_ranges = [
+        (28_300_000, 29_700_000), (50_100_000, 54_000_000), (144_200_000, 148_000_000),
+        (222_000_000, 225_000_000), (440_000_000, 450_000_000),
+    ]
+    if any(lo <= f_hz <= hi for lo, hi in ham_voice_ranges) and demod in ("Narrow FM", "AM", "USB", "LSB"):
+        return {
+            "is_voice_broadcast": False,
+            "is_any_voice": True,
+            "voice_label": "[🗣️ HAM VOICE]",
+            "short_label": "HAM VOICE",
+            "voice_tag": "Amateur_Voice",
+            "color": "#c084fc",
+            "bg": "#3b0764",
+        }
+
+    # 10. Exotic Pictogram / Waterfall Art
+    if pic_label.startswith("PICTO_") or "Pictogram" in pic_label or "Glyph" in pic_label:
+        return {
+            "is_voice_broadcast": False,
+            "is_any_voice": False,
+            "voice_label": "[🎨 PICTOGRAM]",
+            "short_label": "PICTOGRAM",
+            "voice_tag": "Pictogram_Exotic",
+            "color": "#ec4899",
+            "bg": "#500724",
+        }
+
+    # 11. Generic voice channel if standard voice demodulation
+    if demod in ("Narrow FM", "AM", "USB", "LSB") and obw_hz <= 30_000:
+        return {
+            "is_voice_broadcast": False,
+            "is_any_voice": True,
+            "voice_label": "[🗣️ VOICE CHANNEL]",
+            "short_label": "VOICE CH",
+            "voice_tag": "Voice_Channel",
+            "color": "#38bdf8",
+            "bg": "#0c4a6e",
+        }
+
+    # 12. Unclassified Data / Carrier
+    return {
+        "is_voice_broadcast": False,
+        "is_any_voice": False,
+        "voice_label": "[📊 DATA / TELEM]",
+        "short_label": "DATA/TELEM",
+        "voice_tag": "Data_Telemetry",
+        "color": "#64748b",
+        "bg": "#1e293b",
+    }
+

@@ -23,9 +23,11 @@ import cv2
 from core.bandplans import (
     BOOKMARK_CATEGORY_COLORS,
     NOAA_WX_CHANNELS_HZ,
+    classify_voice_broadcast,
     evaluate_signal_demod_feasibility,
     normalize_gqrx_waterfall_bounds,
 )
+from core.demod_engine import get_demod_profile_for_signal, identify_atsc_tv_channel
 from core.gps_engine import GPSLocalityFix, format_approx_local_datetime
 from core.gqrx_controller import GqrxController
 
@@ -97,6 +99,12 @@ class ClassifiedSignalProfile:
     legal_notes: str
     locality_ref: str
     timestamp_iso: str
+    is_voice_broadcast: bool = False  # True for FM/AM commercial & NOAA weather voice broadcasts
+    is_any_voice: bool = False        # True for all voice signals (broadcast + ATC + ham + two-way)
+    voice_label: str = ""             # Prominent label with emoji, e.g. [📻 VOICE BROADCAST]
+    demod_tool: str = "gqrx"          # 'gqrx', 'rtl_433', 'w_scan_cpp', 'readsb', 'multimon_ng', 'direwolf'
+    demod_cmd: str = ""               # Specialized demodulator CLI command
+    atsc_channel: Optional[int] = None # ATSC television channel (2-36) if TV broadcast
     thumbnail_path: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
@@ -104,19 +112,58 @@ class ClassifiedSignalProfile:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ClassifiedSignalProfile":
+        f_hz = float(data.get("frequency_hz", 0))
+        demod_str = str(data.get("modulation", ""))
+        sig_name = str(data.get("signal_name", ""))
+        pic_lbl = str(data.get("pictogram_label", ""))
+        prof_cat = str(data.get("profile_category", ""))
+        bw_hz = float(data.get("bandwidth_hz", 16000.0))
+
+        # Dynamically classify voice broadcast nature if not explicitly stored
+        v_info = classify_voice_broadcast(
+            freq_hz=f_hz,
+            demod=demod_str,
+            band_name=sig_name,
+            service_type="",
+            pic_label=pic_lbl,
+            profile_category=prof_cat,
+            obw_hz=bw_hz,
+        )
+
+        demod_target = get_demod_profile_for_signal(
+            freq_hz=f_hz,
+            demod=demod_str,
+            band_name=sig_name,
+            service_type="",
+            pic_label=pic_lbl,
+            profile_category=prof_cat,
+            obw_hz=bw_hz,
+        )
+
         defaults = {
-            "raw_measured_hz": float(data.get("frequency_hz", 0)),
+            "raw_measured_hz": f_hz,
             "carrier_offset_hz": 0.0,
-            "rigctl_mode": "WFM_ST" if "WFM" in str(data.get("modulation", "")) else "FM",
-            "passband_hz": int(data.get("bandwidth_hz", 16000)),
+            "rigctl_mode": "WFM_ST" if "WFM" in demod_str else "FM",
+            "passband_hz": int(bw_hz),
             "sql_level": -150.0,
             "iq_mod_hint": "NFM",
             "duty_cycle": 1.0,
             "frames_evaluated": 3,
             "pictogram_neural_class": "carrier_comb",
+            "is_voice_broadcast": v_info["is_voice_broadcast"],
+            "is_any_voice": v_info["is_any_voice"],
+            "voice_label": v_info["voice_label"],
+            "demod_tool": demod_target.tool_id,
+            "demod_cmd": demod_target.command,
+            "atsc_channel": demod_target.atsc_channel,
             "thumbnail_path": "",
         }
         merged = {**defaults, **data}
+        if not merged.get("voice_label"):
+            merged["is_voice_broadcast"] = v_info["is_voice_broadcast"]
+            merged["is_any_voice"] = v_info["is_any_voice"]
+            merged["voice_label"] = v_info["voice_label"]
+
         valid_keys = set(cls.__dataclass_fields__.keys())
         filtered = {k: v for k, v in merged.items() if k in valid_keys}
         wf_min, wf_max = normalize_gqrx_waterfall_bounds(
@@ -288,12 +335,33 @@ class SignalProfileOrganizer:
             if pic_cat in ("PICTO_GLYPH", "PICTO_RASTER", "PICTO_GEOMETRIC"):
                 category = "Pictogram_Exotic"
 
+            v_info = classify_voice_broadcast(
+                freq_hz=freq_hz,
+                demod=feasibility["demod"],
+                band_name=feasibility["band_name"],
+                service_type=feasibility.get("service_type", ""),
+                pic_label=pic_label,
+                profile_category=category,
+                obw_hz=bw_hz,
+            )
+
+            demod_target = get_demod_profile_for_signal(
+                freq_hz=freq_hz,
+                demod=feasibility["demod"],
+                band_name=feasibility["band_name"],
+                service_type=feasibility.get("service_type", ""),
+                pic_label=pic_label,
+                profile_category=category,
+                obw_hz=bw_hz,
+            )
+
             name = self._generate_channel_name(
                 freq_hz=freq_hz,
                 band_name=feasibility["band_name"],
                 demod=feasibility["demod"],
                 pic_label=pic_label,
                 gps_fix=gps_fix,
+                voice_label=v_info["voice_label"],
             )
 
             # Persist 3+ frame composite spectrogram PNG thumbnail on disk
@@ -343,6 +411,12 @@ class SignalProfileOrganizer:
                 legal_notes=feasibility["legal_notes"],
                 locality_ref=locality_str,
                 timestamp_iso=str(s.get("timestamp_iso", gps_fix.utc_timestamp_iso)),
+                is_voice_broadcast=v_info["is_voice_broadcast"],
+                is_any_voice=v_info["is_any_voice"],
+                voice_label=v_info["voice_label"],
+                demod_tool=demod_target.tool_id,
+                demod_cmd=demod_target.command,
+                atsc_channel=demod_target.atsc_channel,
                 thumbnail_path=thumb_file,
             )
             profiles.append(prof)
@@ -567,6 +641,8 @@ class SignalProfileOrganizer:
             tags = []
             if is_target:
                 tags.append("Active_Target")
+            if p.is_voice_broadcast:
+                tags.append("Voice_Broadcast")
             cat_tag = p.profile_category.replace(";", "_").replace(",", "_")
             tags.append(cat_tag)
             tags.append("SmartScanner")
@@ -603,16 +679,23 @@ class SignalProfileOrganizer:
         demod: str,
         pic_label: str,
         gps_fix: GPSLocalityFix,
+        voice_label: str = "",
     ) -> str:
         f_mhz = round(freq_hz / 1e6, 4)
         in_denver_grid = gps_fix.maidenhead_grid.upper().startswith("DM79") or "Denver" in gps_fix.locality_name
+
+        if not voice_label:
+            v_info = classify_voice_broadcast(freq_hz=freq_hz, demod=demod, band_name=band_name, pic_label=pic_label)
+            voice_label = v_info["voice_label"]
+
+        pfx = f"{voice_label} " if voice_label else ""
 
         # 1. FM Commercial Broadcast
         if 87_800_000 <= freq_hz <= 108_100_000:
             key_1 = round(freq_hz / 1e6, 1)
             if in_denver_grid and key_1 in DENVER_FM_CALLSIGNS_MHZ:
-                return f"{key_1:.1f} MHz {DENVER_FM_CALLSIGNS_MHZ[key_1]} [{pic_label}]"
-            return f"{f_mhz:.3f} MHz FM Broadcast [{pic_label}]"
+                return f"{pfx}{key_1:.1f} MHz {DENVER_FM_CALLSIGNS_MHZ[key_1]} [{pic_label}]"
+            return f"{pfx}{f_mhz:.3f} MHz FM Broadcast [{pic_label}]"
 
         # 2. NOAA All-Hazards Weather Radio WX1..WX7
         if 162_385_000 <= freq_hz <= 162_565_000:
@@ -627,29 +710,43 @@ class SignalProfileOrganizer:
             }
             nearest = min(NOAA_WX_CHANNELS_HZ, key=lambda c: abs(c - freq_hz))
             wx_id = wx_map.get(nearest, "WX")
-            return f"{f_mhz:.3f} MHz NOAA Weather {wx_id} [{pic_label}]"
+            return f"{pfx}{f_mhz:.3f} MHz NOAA Weather {wx_id} [{pic_label}]"
 
         # 3. Civil Aviation Airband
         if 118_000_000 <= freq_hz <= 136_975_000:
             if abs(freq_hz - 121_500_000) <= 5_000:
-                return "121.500 MHz Airband Emergency Guard (AM)"
+                return f"{pfx}121.500 MHz Airband Emergency Guard (AM)"
             if in_denver_grid:
                 if abs(freq_hz - 118_750_000) <= 8_000:
-                    return f"{f_mhz:.3f} MHz KDEN/KBJC Approach ATC [{pic_label}]"
+                    return f"{pfx}{f_mhz:.3f} MHz KDEN/KBJC Approach ATC [{pic_label}]"
                 if abs(freq_hz - 125_600_000) <= 8_000:
-                    return f"{f_mhz:.3f} MHz KDEN ATIS Weather [{pic_label}]"
-            return f"{f_mhz:.3f} MHz Civil Airband ATC [{pic_label}]"
+                    return f"{pfx}{f_mhz:.3f} MHz KDEN ATIS Weather [{pic_label}]"
+            return f"{pfx}{f_mhz:.3f} MHz Civil Airband ATC [{pic_label}]"
 
         # 4. Marine & Amateur Calling Channels
         if abs(freq_hz - 156_800_000) <= 8_000:
-            return "156.800 MHz Marine VHF Ch 16 Distress"
+            return f"{pfx}156.800 MHz Marine VHF Ch 16 Distress"
         if abs(freq_hz - 146_520_000) <= 6_000:
-            return "146.520 MHz 2m Amateur National Simplex"
+            return f"{pfx}146.520 MHz 2m Amateur National Simplex"
         if abs(freq_hz - 446_000_000) <= 6_000:
-            return "446.000 MHz 70cm Amateur National Simplex"
+            return f"{pfx}446.000 MHz 70cm Amateur National Simplex"
 
         # 5. FRS / GMRS Channels
         if 462_550_000 <= freq_hz <= 467_725_000:
-            return f"{f_mhz:.4f} MHz FRS/GMRS Personal [{pic_label}]"
+            return f"{pfx}{f_mhz:.4f} MHz FRS/GMRS Personal [{pic_label}]"
 
-        return f"{f_mhz:.4f} MHz {band_name} [{pic_label}]"
+        # 6. ATSC Digital Broadcast Television Channels
+        tv_info = identify_atsc_tv_channel(freq_hz)
+        if tv_info is not None:
+            ch, center, lo, pilot = tv_info
+            return f"{pfx}{f_mhz:.3f} MHz ATSC Digital TV Ch {ch} [{pic_label}]"
+
+        # 7. Aviation ADS-B Mode-S Transponders (1090 MHz)
+        if 1_088_000_000 <= freq_hz <= 1_092_000_000:
+            return f"{pfx}1090.000 MHz ADS-B Transponders [{pic_label}]"
+
+        # 8. ISM Telemetry & Sensor Channels (433 / 915 MHz)
+        if (433_000_000 <= freq_hz <= 434_900_000) or (902_000_000 <= freq_hz <= 928_000_000):
+            return f"{pfx}{f_mhz:.3f} MHz ISM Telemetry [{pic_label}]"
+
+        return f"{pfx}{f_mhz:.4f} MHz {band_name} [{pic_label}]"

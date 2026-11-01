@@ -35,6 +35,13 @@ if [ "${INSTALL_SYSTEM_PKGS}" -eq 1 ] && command -v apt-get >/dev/null 2>&1; the
     sudo apt-get install -y \
         hackrf \
         gqrx-sdr \
+        rtl-433 \
+        multimon-ng \
+        direwolf \
+        minimodem \
+        readsb \
+        w-scan-cpp \
+        sox \
         gpsd \
         gpsd-clients \
         python3-venv \
@@ -46,6 +53,9 @@ if [ "${INSTALL_SYSTEM_PKGS}" -eq 1 ] && command -v apt-get >/dev/null 2>&1; the
         python3-serial \
         python3-pytest \
         pulseaudio-utils
+
+    # Disable background readsb daemon if enabled by apt so HackRF isn't locked automatically
+    sudo systemctl disable --now readsb 2>/dev/null || true
 
     # Install HailoRT & Hailo Model Zoo if available in apt repositories (Raspberry Pi AI HAT+ 26 TOPS)
     if apt-cache show hailo-all >/dev/null 2>&1; then
