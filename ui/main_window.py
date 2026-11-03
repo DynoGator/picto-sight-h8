@@ -55,6 +55,7 @@ from PyQt6.QtWidgets import (
 from core.bandplans import (
     GQRX_DEMOD_SPECS,
     SUPPORTED_DEMOD_MODES,
+    classify_voice_broadcast,
     evaluate_signal_demod_feasibility,
 )
 from core.demod_engine import launch_in_gui_terminal
@@ -68,6 +69,7 @@ from core.profile_organizer import (
 )
 from core.scanner_pipeline import MultiLayerScannerPipeline, ScanProgressUpdate
 from core.sdr_arbiter import get_sdr_arbiter
+from ui.map_widget import TacticalRadarTelemetryWidget
 from ui.styles import build_theme_qss
 from ui.widgets import (
     DualLayerProgressBar,
@@ -99,11 +101,17 @@ class SmartScannerMainWindow(QMainWindow):
 
     BAND_PRESETS: List[Tuple[str, int, int]] = [
         ("FM Broadcast + Airband (88 - 137 MHz)", 88, 137),
+        ("Fremont Co Fire / Sheriff / SAR / Med (154 - 156 MHz)", 154, 156),
+        ("Trucker CB Radio All 40 Channels (26 - 28 MHz)", 26, 28),
+        ("Railroad Operations UP & Royal Gorge (160 - 162 MHz)", 160, 162),
+        ("Penrose 1V6 Aviation CTAF + AWOS (118 - 124 MHz)", 118, 124),
         ("Commercial FM Broadcast (88 - 108 MHz)", 88, 108),
         ("Civil Aviation Airband (118 - 137 MHz)", 118, 137),
         ("VHF High / NOAA / Marine / 2m (136 - 174 MHz)", 136, 174),
+        ("Broadcast TV ATSC Front Range (174 - 560 MHz)", 174, 560),
         ("UHF FRS / GMRS / 70cm / LMR (420 - 480 MHz)", 420, 480),
         ("ISM 915 MHz Telemetry (902 - 928 MHz)", 902, 928),
+        ("ADS-B 1090 MHz Aviation Radar (1089 - 1091 MHz)", 1089, 1091),
         ("Full VHF/UHF Survey (88 - 480 MHz)", 88, 480),
         ("Custom Frequency Range", 88, 137),
     ]
@@ -265,7 +273,7 @@ class SmartScannerMainWindow(QMainWindow):
 
         self.pill_sdr = TelemetryMeterPill("SDR", "SDR: READY", "#10b981", self)
         self.pill_hailo = TelemetryMeterPill("AI", "HAILO-8: 26T", "#00f0ff", self)
-        self.pill_gps = TelemetryMeterPill("GPS", "DM79mr • Denver", "#38bdf8", self)
+        self.pill_gps = TelemetryMeterPill("GPS", "DM78vj • Penrose", "#38bdf8", self)
         self.pill_gqrx = TelemetryMeterPill("GQRX", "GQRX: STANDBY", "#94a3b8", self)
 
         hdr_hbox.addWidget(self.pill_sdr, 3)
@@ -330,26 +338,29 @@ class SmartScannerMainWindow(QMainWindow):
 
         self.root_vbox.addWidget(self.prog_frame)
 
-        # 3. BUILD THE 4 CORE FUNCTIONAL PANELS
+        # 3. BUILD THE CORE FUNCTIONAL PANELS
         self.panel_controls = self._build_controls_panel()
         self.panel_visuals = self._build_visuals_panel()
         self.panel_signals = self._build_signals_panel()
         self.panel_profiles = self._build_profiles_panel()
+        self.panel_map = TacticalRadarTelemetryWidget(self)
+        self.panel_map.tune_requested.connect(self._on_map_tune_requested)
 
         # 4. DECK NAVIGATION BAR (Visible in 5" 800x480 Touch Deck Mode)
         self.deck_nav_widget = QWidget(self)
         nav_hbox = QHBoxLayout(self.deck_nav_widget)
         nav_hbox.setContentsMargins(0, 0, 0, 0)
-        nav_hbox.setSpacing(4)
+        nav_hbox.setSpacing(3)
 
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
-        self.btn_tab_ctrl = QPushButton("⚙ 1. SCAN & OPTIONS", self)
-        self.btn_tab_vis = QPushButton("∿ 2. LIVE RF & AI", self)
+        self.btn_tab_ctrl = QPushButton("⚙ 1. SCAN", self)
+        self.btn_tab_vis = QPushButton("∿ 2. RF & AI", self)
         self.btn_tab_sigs = QPushButton("◉ 3. SIGNALS (0)", self)
         self.btn_tab_prof = QPushButton("★ 4. PROFILES (0)", self)
+        self.btn_tab_map = QPushButton("🗺 5. RADAR/MAP", self)
 
-        for idx, btn in enumerate((self.btn_tab_ctrl, self.btn_tab_vis, self.btn_tab_sigs, self.btn_tab_prof)):
+        for idx, btn in enumerate((self.btn_tab_ctrl, self.btn_tab_vis, self.btn_tab_sigs, self.btn_tab_prof, self.btn_tab_map)):
             btn.setObjectName("navTabBtn")
             btn.setCheckable(True)
             btn.setMinimumHeight(28)
@@ -752,8 +763,8 @@ class SmartScannerMainWindow(QMainWindow):
         )
         self.btn_layout_mode.setText(f"[ ] {mode_tag}")
 
-        # Detach the 4 reusable panels safely before rebuilding host container
-        for pnl in (self.panel_controls, self.panel_visuals, self.panel_signals, self.panel_profiles):
+        # Detach the 5 reusable panels safely before rebuilding host container
+        for pnl in (self.panel_controls, self.panel_visuals, self.panel_signals, self.panel_profiles, self.panel_map):
             pnl.setParent(None)
 
         while self.body_host_layout.count():
@@ -766,15 +777,17 @@ class SmartScannerMainWindow(QMainWindow):
         self.studio_splitter = None
 
         if want_compact:
-            # Topology A: 5-inch 800x480 DSI Multitouch 4-Tab Deck
+            # Topology A: 5-inch 800x480 DSI Multitouch 5-Tab Deck
             self.panel_controls.setMaximumWidth(16777215)
             self.panel_profiles.setMaximumWidth(16777215)
+            self.panel_map.setMaximumWidth(16777215)
             self.deck_nav_widget.setVisible(True)
             stack = QStackedWidget(self.body_host)
             stack.addWidget(self.panel_controls)
             stack.addWidget(self.panel_visuals)
             stack.addWidget(self.panel_signals)
             stack.addWidget(self.panel_profiles)
+            stack.addWidget(self.panel_map)
             checked_id = self.nav_group.checkedId()
             stack.setCurrentIndex(max(0, checked_id))
             self.body_host_layout.addWidget(stack)
@@ -794,8 +807,9 @@ class SmartScannerMainWindow(QMainWindow):
 
             right_vsplit = QSplitter(Qt.Orientation.Vertical, h_split)
             right_vsplit.addWidget(self.panel_visuals)
+            right_vsplit.addWidget(self.panel_map)
             right_vsplit.addWidget(self.panel_signals)
-            right_vsplit.setSizes([330, 440])
+            right_vsplit.setSizes([260, 260, 320])
 
             h_split.addWidget(left_vsplit)
             h_split.addWidget(right_vsplit)
@@ -805,7 +819,7 @@ class SmartScannerMainWindow(QMainWindow):
             self.body_host_layout.addWidget(h_split)
             self.studio_splitter = h_split
 
-        for pnl in (self.panel_controls, self.panel_visuals, self.panel_signals, self.panel_profiles):
+        for pnl in (self.panel_controls, self.panel_visuals, self.panel_signals, self.panel_profiles, self.panel_map):
             pnl.setVisible(True)
 
         self._configure_signals_table_columns(compact=want_compact)
@@ -1366,6 +1380,64 @@ class SmartScannerMainWindow(QMainWindow):
         # Voice broadcasts or analog signals tune live in Gqrx
         self.tune_signal_in_gqrx(profile)
 
+    def _on_map_tune_requested(self, name: str, freq_hz: float, demod_mode: str) -> None:
+        """Handles instant 1-click tuning from the tactical radar & airspace map toolbar."""
+        target_prof: Optional[ClassifiedSignalProfile] = None
+        for p in self.all_profiles:
+            if abs(p.frequency_hz - freq_hz) <= 8000:
+                target_prof = p
+                break
+
+        if target_prof is None:
+            feas = evaluate_signal_demod_feasibility(
+                freq_hz=freq_hz,
+                snr_db=18.0,
+                measured_bw_hz=16000.0,
+                demod_override=demod_mode,
+            )
+            v_info = classify_voice_broadcast(freq_hz, demod=demod_mode, band_name=name)
+            target_prof = ClassifiedSignalProfile(
+                frequency_hz=int(freq_hz),
+                frequency_mhz=round(freq_hz / 1e6, 4),
+                raw_measured_hz=float(freq_hz),
+                carrier_offset_hz=0.0,
+                signal_name=name,
+                profile_category=feas.get("profile_category", "Public_Safety"),
+                modulation=demod_mode,
+                rigctl_mode=feas.get("rigctl_mode", "FM"),
+                passband_hz=feas.get("passband_hz", 12500),
+                filter_low_cut=feas.get("filter_low_cut", -6250),
+                filter_high_cut=feas.get("filter_high_cut", 6250),
+                fm_maxdev=feas.get("fm_maxdev", 5000),
+                sql_level=-150.0,
+                bandwidth_hz=16000.0,
+                snr_db=18.0,
+                peak_dbm=-48.0,
+                noise_floor_dbm=-85.0,
+                iq_mod_hint="NFM" if "FM" in demod_mode else demod_mode,
+                duty_cycle=1.0,
+                frames_evaluated=3,
+                pictogram_category="NARROWBAND_FM",
+                pictogram_neural_class="carrier_comb",
+                pictogram_label="Tactical-Prior",
+                pictogram_confidence=0.95,
+                hailo_accelerated=True,
+                lna_gain=feas.get("lna_gain", 32),
+                vga_gain=feas.get("vga_gain", 24),
+                amp_gain=feas.get("amp_gain", 0),
+                plot_min=float(feas.get("pandapter_min_db", -95)),
+                plot_max=float(feas.get("pandapter_max_db", -30)),
+                is_legal=True,
+                legal_notes="Open civilian reception",
+                locality_ref="Penrose, Fremont County, Colorado (DM78vj)",
+                timestamp_iso=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                is_voice_broadcast=v_info["is_voice_broadcast"],
+                is_any_voice=v_info["is_any_voice"],
+                voice_label=v_info["voice_label"],
+            )
+
+        self.handle_signal_demod_action(target_prof)
+
     # ------------------------------------------------------------------
     # Non-Blocking Gqrx Translation, Launch & Live Verification
     # ------------------------------------------------------------------
@@ -1679,6 +1751,11 @@ class SmartScannerMainWindow(QMainWindow):
 
         action = str(cmd.get("action", "")).upper()
         mode = str(cmd.get("mode", "")).upper()
+        if action == "SWITCH_TAB":
+            tab_idx = int(cmd.get("tab", 0))
+            self._switch_deck_tab(tab_idx)
+            return
+
         if action == "AUTO_SCAN" and mode in ("QUICK", "DEEP", "CUSTOM"):
             self._select_scan_mode(mode)
             if mode in ("QUICK", "DEEP"):

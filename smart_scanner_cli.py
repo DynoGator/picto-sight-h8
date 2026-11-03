@@ -210,9 +210,27 @@ def main() -> None:
         help="Analyze North American ATSC digital broadcast television channel at given frequency in MHz",
     )
     parser.add_argument("--voice-only", action="store_true", help="Filter output list to only voice broadcast stations (FM/AM/SW/NOAA)")
+    parser.add_argument("--fremont-guide", action="store_true", help="Display local frequency guide for Fremont County, Penrose, CO & surrounding area")
     parser.add_argument("--list-profiles", action="store_true", help="List permanently saved Location Profiles")
 
     args = parser.parse_args()
+
+    if args.fremont_guide:
+        from core.profile_organizer import FREMONT_PENROSE_FREQUENCY_GUIDE, CB_CHANNELS_HZ
+        print("\n" + "=" * 90)
+        print("FREMONT COUNTY & PENROSE, COLORADO (DM78vj) — LOCAL RF FREQUENCY & CHANNEL GUIDE")
+        print("=" * 90)
+        print(f"\n[+] Local Public Safety, Fire, EMS, Sheriff, Railroad, Aviation & TV Channels ({len(FREMONT_PENROSE_FREQUENCY_GUIDE)}):")
+        for f_hz in sorted(FREMONT_PENROSE_FREQUENCY_GUIDE.keys()):
+            name = FREMONT_PENROSE_FREQUENCY_GUIDE[f_hz]
+            print(f"  • {f_hz / 1e6:8.4f} MHz : {name}")
+
+        print(f"\n[+] Trucker Citizens Band (CB) Reference Channels ({len(CB_CHANNELS_HZ)}):")
+        for f_hz in sorted(CB_CHANNELS_HZ.keys()):
+            name = CB_CHANNELS_HZ[f_hz]
+            print(f"  • {f_hz / 1e6:8.4f} MHz : {name}")
+        print("=" * 90 + "\n")
+        return
 
     if args.list_profiles:
         org = SignalProfileOrganizer()

@@ -514,6 +514,46 @@ class AIPictogramClassifierManager:
         if is_pager_band and (iq_mod == "DIGITAL_BURST" or eff_class in ("tone_matrix", "raster", "carrier_comb")):
             return "PAGER_DATA", f"Pager-POCSAG ({eff_class})", eff_conf
 
+        # 7. Citizens Band (CB) Radio (26.965 - 27.405 MHz AM)
+        if 26_960_000 <= center_freq_hz <= 27_410_000:
+            if abs(center_freq_hz - 27_185_000) <= 6_000:
+                return "TRUCKER_CB", f"CB-19-Trucker ({eff_class})", max(0.85, eff_conf)
+            if abs(center_freq_hz - 27_065_000) <= 6_000:
+                return "TRUCKER_CB", f"CB-09-Emerg ({eff_class})", max(0.85, eff_conf)
+            return "TRUCKER_CB", f"CB-Voice ({eff_class})", max(0.80, eff_conf)
+
+        # 8. Fremont County / Penrose Fire & Public Safety
+        if abs(center_freq_hz - 155_880_000) <= 6_000:
+            return "FIRE_EMS", f"Penrose-Fire-Ops ({eff_class})", max(0.88, eff_conf)
+        if abs(center_freq_hz - 154_400_000) <= 6_000:
+            return "FIRE_EMS", f"Fire-Dispatch-154.4 ({eff_class})", max(0.88, eff_conf)
+        if abs(center_freq_hz - 154_310_000) <= 6_000:
+            return "FIRE_EMS", f"Canon-Fire-154.31 ({eff_class})", max(0.88, eff_conf)
+        if abs(center_freq_hz - 154_845_000) <= 6_000:
+            return "SHERIFF_POLICE", f"Fremont-Sheriff-154.8 ({eff_class})", max(0.88, eff_conf)
+        if abs(center_freq_hz - 155_160_000) <= 6_000:
+            return "SEARCH_RESCUE", f"CO-SAR-MRA1 ({eff_class})", max(0.88, eff_conf)
+        if abs(center_freq_hz - 155_235_000) <= 6_000:
+            return "SEARCH_RESCUE", f"CO-SAR-MRA2 ({eff_class})", max(0.88, eff_conf)
+        if abs(center_freq_hz - 155_340_000) <= 6_000:
+            return "MEDEVAC_HOSPITAL", f"CHERN-Med9-Hospital ({eff_class})", max(0.88, eff_conf)
+
+        # 9. Local Aviation Airband & Penrose Fremont Co Airport (1V6)
+        if abs(center_freq_hz - 122_800_000) <= 6_000:
+            return "AVIATION_AM", f"1V6-Penrose-CTAF ({eff_class})", max(0.88, eff_conf)
+        if abs(center_freq_hz - 120_025_000) <= 6_000:
+            return "AVIATION_AM", f"1V6-Penrose-AWOS ({eff_class})", max(0.88, eff_conf)
+
+        # 10. Railroad Operations (Union Pacific & Royal Gorge)
+        if 160_215_000 <= center_freq_hz <= 161_565_000:
+            if abs(center_freq_hz - 161_490_000) <= 6_000:
+                return "RAILROAD_AAR", f"UP-AAR92-Rail ({eff_class})", max(0.88, eff_conf)
+            if abs(center_freq_hz - 160_590_000) <= 6_000:
+                return "RAILROAD_AAR", f"Gorge-AAR32-Rail ({eff_class})", max(0.88, eff_conf)
+            if abs(center_freq_hz - 161_550_000) <= 6_000:
+                return "RAILROAD_AAR", f"JointLine-AAR96 ({eff_class})", max(0.88, eff_conf)
+            return "RAILROAD_AAR", f"Rail-AAR ({eff_class})", max(0.82, eff_conf)
+
         # Band + IQ + Neural pattern fusion
         if 87.8e6 <= center_freq_hz <= 108.1e6:
             sub = "MPX-Comb" if eff_class in ("carrier_comb", "raster") else f"WFM-{eff_class}"

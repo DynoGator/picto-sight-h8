@@ -62,6 +62,145 @@ DENVER_FM_CALLSIGNS_MHZ: Dict[float, str] = {
     107.9: "KBPI Rocks the Rockies",
 }
 
+# Southern Colorado / Pueblo / Fremont County / Colorado Springs FM Broadcast
+SOUTHERN_CO_FM_CALLSIGNS_MHZ: Dict[float, str] = {
+    88.3: "KUTE / KSUT Four Corners Public Radio",
+    89.1: "KEPC Pikes Peak Radio",
+    89.7: "KFSR Classic Christian",
+    90.5: "KTLF Light Praise",
+    90.9: "KTSC-FM Pueblo Public Radio",
+    91.5: "KCCG / KCFR Colorado Public Radio",
+    92.9: "KSPK-FM Real Country (Pueblo/Cañon City)",
+    93.9: "KILO 94.3 Rock (Pueblo/CO Springs)",
+    95.1: "KATC Cat Country 95.1",
+    96.1: "KIBT 96.1 The Beat",
+    96.9: "KCCY Country",
+    98.1: "KKFM Classic Rock",
+    98.9: "KKMG Magic 98.9",
+    99.9: "KVOR News/Talk",
+    100.7: "KGFT Christian Talk",
+    101.9: "KKCS / KBEE Country",
+    102.7: "KBIQ The Peak Christian",
+    103.9: "KRDO-FM News/Talk Radio",
+    104.5: "KKLI Colorado Springs",
+    105.5: "KSRX Bob FM",
+    106.3: "KKPK The Peak",
+    107.3: "KILO 107.3 Active Rock",
+    107.9: "KDZA Pueblo Rock",
+}
+
+# Complete 40-Channel Citizens Band (CB) Reference
+CB_CHANNELS_HZ: Dict[int, str] = {
+    26_965_000: "CB Ch 01 Calling / General",
+    26_975_000: "CB Ch 02 Calling / General",
+    26_985_000: "CB Ch 03 Calling / General",
+    27_005_000: "CB Ch 04 4x4 / Offroad Calling",
+    27_015_000: "CB Ch 05 Calling / General",
+    27_025_000: "CB Ch 06 The Superbowl (High Power DX)",
+    27_035_000: "CB Ch 07 Calling / General",
+    27_055_000: "CB Ch 08 Calling / General",
+    27_065_000: "CB Ch 09 Emergency & Motorist Assistance",
+    27_075_000: "CB Ch 10 Regional Road Calling",
+    27_085_000: "CB Ch 11 National Simplex Calling",
+    27_105_000: "CB Ch 12 Calling / General",
+    27_115_000: "CB Ch 13 Marine / RV Calling",
+    27_125_000: "CB Ch 14 Local 2-Way Calling / Walkie-Talkies",
+    27_135_000: "CB Ch 15 Calling / General",
+    27_155_000: "CB Ch 16 4x4 Trail Simplex",
+    27_165_000: "CB Ch 17 Trucker North/South Interstates (I-25)",
+    27_175_000: "CB Ch 18 Calling / General",
+    27_185_000: "CB Ch 19 Trucker Highway Calling (Primary US-50)",
+    27_205_000: "CB Ch 20 Calling / General",
+    27_215_000: "CB Ch 21 Calling / General",
+    27_225_000: "CB Ch 22 Calling / General",
+    27_255_000: "CB Ch 23 Shared Industrial / Remote Control",
+    27_235_000: "CB Ch 24 Calling / General",
+    27_245_000: "CB Ch 25 Calling / General",
+    27_265_000: "CB Ch 26 Calling / General",
+    27_275_000: "CB Ch 27 Calling / General",
+    27_285_000: "CB Ch 28 High Power Regional DX",
+    27_295_000: "CB Ch 29 Calling / General",
+    27_305_000: "CB Ch 30 Calling / General",
+    27_315_000: "CB Ch 31 Calling / General",
+    27_325_000: "CB Ch 32 Calling / General",
+    27_335_000: "CB Ch 33 Calling / General",
+    27_345_000: "CB Ch 34 Calling / General",
+    27_355_000: "CB Ch 35 Calling / General",
+    27_365_000: "CB Ch 36 Calling / General",
+    27_375_000: "CB Ch 37 Calling / General",
+    27_385_000: "CB Ch 38 SSB LSB Calling Channel",
+    27_395_000: "CB Ch 39 Calling / General",
+    27_405_000: "CB Ch 40 Highway Top Channel",
+}
+
+# Fremont County, Penrose, Cañon City, Florence & Surrounding Locality Master Frequency Guide
+FREMONT_PENROSE_FREQUENCY_GUIDE: Dict[int, str] = {
+    # Fremont County Fire & EMS
+    155_880_000: "Penrose Fire Dept (Pagers / Fire Ops)",
+    154_400_000: "Florence / Penrose Fire Dispatch (PL 123.0)",
+    154_310_000: "Cañon City Fire Dept Dispatch",
+    154_235_000: "Deer Mountain Fire Protection District Dispatch",
+    154_370_000: "Tallahassee Fire Protection District Dispatch",
+    154_280_000: "Colorado VFIRE21 State Fire Mutual Aid",
+    154_265_000: "Colorado VFIRE22 State Fire Mutual Aid",
+    154_295_000: "Colorado VFIRE23 State Fire Mutual Aid",
+    154_070_000: "Fremont County Fire Ops West",
+    # Fremont County Sheriff & Law Enforcement
+    154_845_000: "Fremont County Sheriff VHF Backup / Interop",
+    155_010_000: "Colorado State Patrol (CSP) VHF Mutual Aid",
+    155_475_000: "National Law Enforcement Emergency (VCALL/VLAW31)",
+    154_950_000: "Colorado Law Enforcement Emergency (CLEER/VLAW32)",
+    # Search and Rescue (SAR)
+    155_160_000: "Colorado Search & Rescue MRA-1 Primary (Fremont SAR)",
+    155_235_000: "Colorado Search & Rescue MRA-2 Alternate",
+    155_175_000: "Colorado VSAR Tactical 175",
+    155_205_000: "Colorado VSAR Tactical 205",
+    155_220_000: "Colorado SAR Mutual Aid",
+    # Hospital, EMS & Medevac
+    155_340_000: "CHERN Med-9 St Thomas More Hospital Cañon City",
+    155_400_000: "Med-10 Statewide Hospital-Ambulance Interop",
+    155_280_000: "Colorado EMS Statewide Hospital Net",
+    123_025_000: "Flight for Life Colorado Air Ambulance Medevac",
+    123_050_000: "St. Thomas More Hospital Heliport (Cañon City)",
+    # Local Penrose Aviation & Surrounding Airports
+    122_800_000: "Fremont County Airport 1V6 CTAF / UNICOM (Penrose)",
+    120_025_000: "Fremont County Airport 1V6 AWOS-3 Weather (Penrose)",
+    120_100_000: "Colorado Springs Approach / Departure South (Fremont Airspace)",
+    124_000_000: "Colorado Springs Approach / Departure North",
+    119_100_000: "Pueblo Memorial Airport KPUB Tower",
+    125_250_000: "Pueblo Memorial Airport KPUB ATIS Weather",
+    120_150_000: "Pueblo Memorial Airport KPUB Ground",
+    121_500_000: "Civil Aviation Emergency Guard (AM)",
+    # Railroad AAR Operations (UP & Royal Gorge)
+    161_490_000: "Union Pacific AAR 092 Tennessee Pass / Rock & Rail (Penrose-Portland)",
+    160_590_000: "Royal Gorge Route Railroad AAR 032 Road",
+    160_425_000: "Royal Gorge Railroad AAR 021 Yard / Switching",
+    161_550_000: "BNSF / UP Joint Line Dispatcher AAR 096 (Pueblo-COS)",
+    161_100_000: "Union Pacific AAR 066 Pueblo Terminal Dispatch",
+    160_890_000: "BNSF Railway AAR 052 Pueblo Yard",
+    # NOAA Emergency Weather Radio
+    162_475_000: "NOAA Weather Radio WXM56 Cañon City / WXM57 CO Springs",
+    162_400_000: "NOAA Weather Radio WWG43 Pueblo",
+    # MURS Civilian 2-Way
+    151_820_000: "MURS Ch 1 Civilian 2-Way",
+    151_880_000: "MURS Ch 2 Civilian 2-Way",
+    151_940_000: "MURS Ch 3 Civilian 2-Way",
+    154_570_000: "MURS Ch 4 Blue Dot Civilian Voice",
+    154_600_000: "MURS Ch 5 Green Dot Civilian Voice",
+    # Amateur Calling Channels
+    146_520_000: "2m Amateur National Simplex Calling",
+    144_390_000: "Amateur APRS AX.25 Tactical Packet Network",
+    446_000_000: "70cm Amateur National Simplex Calling",
+    # Broadcast TV Stations in Penrose / Pueblo / CO Springs market
+    183_000_000: "KTSC PBS Ch 8 (Pueblo & Colorado Springs)",
+    503_000_000: "K19DY-D KOAA NBC Ch 19 (Cañon City Translator)",
+    521_000_000: "KXRM FOX Ch 22 (Cheyenne Mountain)",
+    533_000_000: "KRDO ABC Ch 24 (Cheyenne Mountain)",
+    539_000_000: "KOAA NBC Ch 25 (Pueblo & Colorado Springs)",
+    545_000_000: "KKTV CBS Ch 26 (Cheyenne Mountain)",
+    551_000_000: "KVSN Univision Ch 27 (Pueblo)",
+}
+
 
 @dataclass
 class ClassifiedSignalProfile:
@@ -682,7 +821,17 @@ class SignalProfileOrganizer:
         voice_label: str = "",
     ) -> str:
         f_mhz = round(freq_hz / 1e6, 4)
-        in_denver_grid = gps_fix.maidenhead_grid.upper().startswith("DM79") or "Denver" in gps_fix.locality_name
+        grid_upper = gps_fix.maidenhead_grid.upper()
+        loc_upper = gps_fix.locality_name.upper()
+        in_fremont_penrose = (
+            grid_upper.startswith("DM78")
+            or "PENROSE" in loc_upper
+            or "FREMONT" in loc_upper
+            or "PUEBLO" in loc_upper
+            or "CANON" in loc_upper
+            or "FLORENCE" in loc_upper
+        )
+        in_denver_grid = grid_upper.startswith("DM79") or "DENVER" in loc_upper
 
         if not voice_label:
             v_info = classify_voice_broadcast(freq_hz=freq_hz, demod=demod, band_name=band_name, pic_label=pic_label)
@@ -690,19 +839,35 @@ class SignalProfileOrganizer:
 
         pfx = f"{voice_label} " if voice_label else ""
 
-        # 1. FM Commercial Broadcast
+        # 0. Master Fremont County, Penrose, Florence, Cañon City & Surrounding Channel Guide Prior
+        # Matches Fire, Sheriff, SAR, Medevac, Railroad, CTAF, TV & Local Public Safety
+        for known_hz, name in FREMONT_PENROSE_FREQUENCY_GUIDE.items():
+            tol = 3_000_000 if "ATSC" in name or "TV" in name else 6_500
+            if abs(freq_hz - known_hz) <= tol:
+                return f"{pfx}{f_mhz:.4f} MHz {name} [{pic_label}]"
+
+        # 1. Complete 40-Channel Citizens Band (CB Radio 27 MHz AM)
+        if 26_960_000 <= freq_hz <= 27_410_000:
+            nearest_cb = min(CB_CHANNELS_HZ.keys(), key=lambda c: abs(c - freq_hz))
+            if abs(freq_hz - nearest_cb) <= 6_000:
+                return f"{pfx}{f_mhz:.4f} MHz {CB_CHANNELS_HZ[nearest_cb]} [{pic_label}]"
+            return f"{pfx}{f_mhz:.4f} MHz CB Radio Channel [{pic_label}]"
+
+        # 2. FM Commercial Broadcast (Locality Aware)
         if 87_800_000 <= freq_hz <= 108_100_000:
             key_1 = round(freq_hz / 1e6, 1)
+            if in_fremont_penrose and key_1 in SOUTHERN_CO_FM_CALLSIGNS_MHZ:
+                return f"{pfx}{key_1:.1f} MHz {SOUTHERN_CO_FM_CALLSIGNS_MHZ[key_1]} [{pic_label}]"
             if in_denver_grid and key_1 in DENVER_FM_CALLSIGNS_MHZ:
                 return f"{pfx}{key_1:.1f} MHz {DENVER_FM_CALLSIGNS_MHZ[key_1]} [{pic_label}]"
             return f"{pfx}{f_mhz:.3f} MHz FM Broadcast [{pic_label}]"
 
-        # 2. NOAA All-Hazards Weather Radio WX1..WX7
+        # 3. NOAA All-Hazards Weather Radio WX1..WX7
         if 162_385_000 <= freq_hz <= 162_565_000:
             wx_map = {
                 162_550_000: "WX1",
-                162_400_000: "WX2",
-                162_475_000: "WX3",
+                162_400_000: "WX2 (WWG43 Pueblo)",
+                162_475_000: "WX3 (WXM56 Cañon City / WXM57 Springs)",
                 162_425_000: "WX4",
                 162_450_000: "WX5",
                 162_500_000: "WX6",
@@ -712,10 +877,14 @@ class SignalProfileOrganizer:
             wx_id = wx_map.get(nearest, "WX")
             return f"{pfx}{f_mhz:.3f} MHz NOAA Weather {wx_id} [{pic_label}]"
 
-        # 3. Civil Aviation Airband
+        # 4. Civil Aviation Airband
         if 118_000_000 <= freq_hz <= 136_975_000:
             if abs(freq_hz - 121_500_000) <= 5_000:
                 return f"{pfx}121.500 MHz Airband Emergency Guard (AM)"
+            if abs(freq_hz - 122_800_000) <= 6_000:
+                return f"{pfx}122.800 MHz Fremont Co 1V6 CTAF/UNICOM [{pic_label}]"
+            if abs(freq_hz - 120_025_000) <= 6_000:
+                return f"{pfx}120.025 MHz Fremont Co 1V6 AWOS-3 [{pic_label}]"
             if in_denver_grid:
                 if abs(freq_hz - 118_750_000) <= 8_000:
                     return f"{pfx}{f_mhz:.3f} MHz KDEN/KBJC Approach ATC [{pic_label}]"
@@ -723,7 +892,7 @@ class SignalProfileOrganizer:
                     return f"{pfx}{f_mhz:.3f} MHz KDEN ATIS Weather [{pic_label}]"
             return f"{pfx}{f_mhz:.3f} MHz Civil Airband ATC [{pic_label}]"
 
-        # 4. Marine & Amateur Calling Channels
+        # 5. Marine & Amateur Calling Channels
         if abs(freq_hz - 156_800_000) <= 8_000:
             return f"{pfx}156.800 MHz Marine VHF Ch 16 Distress"
         if abs(freq_hz - 146_520_000) <= 6_000:
@@ -731,21 +900,21 @@ class SignalProfileOrganizer:
         if abs(freq_hz - 446_000_000) <= 6_000:
             return f"{pfx}446.000 MHz 70cm Amateur National Simplex"
 
-        # 5. FRS / GMRS Channels
+        # 6. FRS / GMRS Channels
         if 462_550_000 <= freq_hz <= 467_725_000:
             return f"{pfx}{f_mhz:.4f} MHz FRS/GMRS Personal [{pic_label}]"
 
-        # 6. ATSC Digital Broadcast Television Channels
+        # 7. ATSC Digital Broadcast Television Channels
         tv_info = identify_atsc_tv_channel(freq_hz)
         if tv_info is not None:
             ch, center, lo, pilot = tv_info
             return f"{pfx}{f_mhz:.3f} MHz ATSC Digital TV Ch {ch} [{pic_label}]"
 
-        # 7. Aviation ADS-B Mode-S Transponders (1090 MHz)
+        # 8. Aviation ADS-B Mode-S Transponders (1090 MHz)
         if 1_088_000_000 <= freq_hz <= 1_092_000_000:
             return f"{pfx}1090.000 MHz ADS-B Transponders [{pic_label}]"
 
-        # 8. ISM Telemetry & Sensor Channels (433 / 915 MHz)
+        # 9. ISM Telemetry & Sensor Channels (433 / 915 MHz)
         if (433_000_000 <= freq_hz <= 434_900_000) or (902_000_000 <= freq_hz <= 928_000_000):
             return f"{pfx}{f_mhz:.3f} MHz ISM Telemetry [{pic_label}]"
 

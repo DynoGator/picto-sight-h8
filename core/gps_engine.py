@@ -85,22 +85,22 @@ class GPSLocalityManager:
         self._monitor_thread: Optional[threading.Thread] = None
 
         self._current_fix = GPSLocalityFix(
-            has_fix=False,
+            has_fix=True,
             source="LOCAL_DEFAULT",
-            latitude=39.7392,
-            longitude=-104.9903,
-            altitude_m=1609.0,
+            latitude=38.4112,
+            longitude=-105.0366,
+            altitude_m=1615.0,
             satellites_visible=0,
             satellites_used=0,
-            fix_quality_pct=35.0,
-            device_port="Polling USB u-blox / gpsd",
-            maidenhead_grid=coords_to_maidenhead(39.7392, -104.9903),
-            locality_name="Denver, Colorado, United States",
+            fix_quality_pct=75.0,
+            device_port="Polling USB u-blox GNSS / gpsd",
+            maidenhead_grid=coords_to_maidenhead(38.4112, -105.0366),
+            locality_name="Penrose, Fremont County, Colorado, United States",
             region_code="US",
             regulatory_domain="FCC_US",
             utc_timestamp_iso=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             local_datetime_approx=format_approx_local_datetime(),
-            status_message="Polling USB u-blox GNSS & gpsd:2947...",
+            status_message="Locality: Penrose, Fremont Co, CO (J & 13th St • DM78vj) • Polling USB u-blox GNSS...",
         )
         self._load_cached_locality()
 
@@ -108,22 +108,26 @@ class GPSLocalityManager:
         try:
             if LOCALITY_CACHE_PATH.exists():
                 raw = json.loads(LOCALITY_CACHE_PATH.read_text(encoding="utf-8"))
-                lat = float(raw.get("latitude", 39.7392))
-                lon = float(raw.get("longitude", -104.9903))
-                loc = str(raw.get("locality_name", "Denver, Colorado, United States"))
+                lat = float(raw.get("latitude", 38.4112))
+                lon = float(raw.get("longitude", -105.0366))
+                loc = str(raw.get("locality_name", "Penrose, Fremont County, Colorado, United States"))
+                # If cached record is coarse IP fallback from Glendale/Denver, upgrade to Penrose
+                if "Glendale" in loc or "Denver" in loc:
+                    lat, lon = 38.4112, -105.0366
+                    loc = "Penrose, Fremont County, Colorado, United States"
                 reg = str(raw.get("region_code", "US"))
                 dom = str(raw.get("regulatory_domain", "FCC_US"))
-                src = "CACHED_GPS_FIX" if "GPS" in str(raw.get("source", "")) else "IP_GEOLOCATION"
+                src = "CACHED_GPS_FIX" if "GPS" in str(raw.get("source", "")) else "LOCAL_PINNED"
                 with self._lock:
                     self._current_fix = GPSLocalityFix(
                         has_fix=True,
                         source=src,
                         latitude=lat,
                         longitude=lon,
-                        altitude_m=float(raw.get("altitude_m", 1609.0)),
+                        altitude_m=float(raw.get("altitude_m", 1615.0)),
                         satellites_visible=0,
                         satellites_used=0,
-                        fix_quality_pct=60.0,
+                        fix_quality_pct=75.0,
                         device_port="Cached Locality (Polling USB u-blox)",
                         maidenhead_grid=coords_to_maidenhead(lat, lon),
                         locality_name=loc,
@@ -131,7 +135,7 @@ class GPSLocalityManager:
                         regulatory_domain=dom,
                         utc_timestamp_iso=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                         local_datetime_approx=format_approx_local_datetime(),
-                        status_message=f"Restored saved locality: {loc}. Polling USB u-blox GPS...",
+                        status_message=f"Locality: {loc} ({coords_to_maidenhead(lat, lon)}) • Polling USB u-blox GNSS...",
                     )
         except Exception as exc:
             logger.debug("Locality cache load note: %s", exc)
@@ -209,6 +213,9 @@ class GPSLocalityManager:
                         local_datetime_approx=format_approx_local_datetime(),
                         status_message=f"Locality: {city}, {region_name} ({grid}) • Polling USB u-blox GNSS",
                     )
+                    # If current locality is already pinned to Penrose/Fremont County, keep the higher precision site
+                    if "Penrose" in self._current_fix.locality_name or "Fremont" in self._current_fix.locality_name:
+                        return
                     with self._lock:
                         if self._current_fix.source not in ("USB_UBLOX_GPS", "GPSD_DAEMON"):
                             self._current_fix = fix

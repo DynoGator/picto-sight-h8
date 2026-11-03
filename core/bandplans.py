@@ -45,9 +45,15 @@ BOOKMARK_CATEGORY_COLORS: Dict[str, str] = {
     "Voice_Broadcast":   "#10b981",
     "Broadcast_Audio":   "#10b981",
     "Broadcast_TV":      "#e11d48",
+    "Fire_EMS":          "#ef4444",
+    "Sheriff_Police":    "#3b82f6",
+    "Search_Rescue":     "#f97316",
+    "Medevac_Hospital":  "#ec4899",
+    "Trucker_CB":        "#a855f7",
+    "Railroad_Radio":    "#eab308",
     "Aviation_Airband":  "#f59e0b",
     "Emergency_Weather": "#ef4444",
-    "Amateur_Radio":     "#a855f7",
+    "Amateur_Radio":     "#c084fc",
     "Marine_VHF":        "#06b6d4",
     "Public_Safety":     "#3b82f6",
     "Pictogram_Exotic":  "#ec4899",
@@ -562,6 +568,118 @@ def classify_voice_broadcast(
             "voice_tag": "Broadcast_TV",
             "color": "#e11d48",  # rose / red
             "bg": "#4c0519",
+        }
+
+    # 0b. Aviation ADS-B Mode-S Transponders (1090 MHz & 978 MHz UAT)
+    if (1_088_000_000 <= f_hz <= 1_092_000_000) or abs(f_hz - 978_000_000) <= 1_000_000 or "ADS-B" in pic_label.upper():
+        return {
+            "is_voice_broadcast": False,
+            "is_any_voice": False,
+            "voice_label": "[📡 ADS-B TELEMETRY]",
+            "short_label": "ADS-B",
+            "voice_tag": "Data_Telemetry",
+            "color": "#38bdf8",  # sky blue
+            "bg": "#082f49",
+        }
+
+    # 0c. POCSAG / FLEX Digital Pager Channels
+    pocsag_freqs = (152_007_500, 152_180_000, 157_740_000, 158_100_000, 158_700_000, 454_025_000, 454_100_000, 459_000_000)
+    if any(abs(f_hz - pf) <= 6_000 for pf in pocsag_freqs) or "PAGER" in pic_label.upper() or "POCSAG" in band_name.upper():
+        return {
+            "is_voice_broadcast": False,
+            "is_any_voice": False,
+            "voice_label": "[📟 POCSAG / PAGER]",
+            "short_label": "POCSAG PAGER",
+            "voice_tag": "Data_Telemetry",
+            "color": "#06b6d4",
+            "bg": "#083344",
+        }
+
+    # 1. Fire & EMS Dispatch & Operations (Penrose, Florence, Cañon City, Deer Mtn)
+    fire_freqs = (155_880_000, 154_400_000, 154_310_000, 154_235_000, 154_370_000, 154_280_000, 154_265_000, 154_295_000, 154_070_000)
+    if any(abs(f_hz - ff) <= 6_000 for ff in fire_freqs) or any(k in band_name.upper() for k in ("PENROSE FIRE", "FIRE DISPATCH", "FIRE DEPT", "FIRE OPS")):
+        return {
+            "is_voice_broadcast": False,
+            "is_any_voice": True,
+            "voice_label": "[🚒 FIRE / EMS DISPATCH]",
+            "short_label": "FIRE/EMS",
+            "voice_tag": "Fire_EMS",
+            "color": "#ef4444",  # red
+            "bg": "#450a0a",
+        }
+
+    # 2. Sheriff & Law Enforcement (Fremont County Sheriff VHF, State Patrol, CLEER)
+    sheriff_freqs = (154_845_000, 155_010_000, 155_475_000, 154_950_000)
+    if any(abs(f_hz - sf) <= 6_000 for sf in sheriff_freqs) or any(k in band_name.upper() for k in ("SHERIFF", "POLICE", "LAW ENFORCEMENT")):
+        return {
+            "is_voice_broadcast": False,
+            "is_any_voice": True,
+            "voice_label": "[🚓 SHERIFF / POLICE]",
+            "short_label": "SHERIFF",
+            "voice_tag": "Sheriff_Police",
+            "color": "#3b82f6",  # blue
+            "bg": "#172554",
+        }
+
+    # 3. Search and Rescue (Colorado SAR MRA-1, MRA-2, CO VSAR)
+    sar_freqs = (155_160_000, 155_235_000, 155_175_000, 155_205_000, 155_220_000)
+    if any(abs(f_hz - sar_f) <= 6_000 for sar_f in sar_freqs) or any(k in band_name.upper() for k in ("SAR", "SEARCH & RESCUE", "SEARCH AND RESCUE", "VSAR")):
+        return {
+            "is_voice_broadcast": False,
+            "is_any_voice": True,
+            "voice_label": "[🏔️ SEARCH & RESCUE]",
+            "short_label": "SEARCH & RESCUE",
+            "voice_tag": "Search_Rescue",
+            "color": "#f97316",  # orange
+            "bg": "#431407",
+        }
+
+    # 4. Medevac & Hospital Interop (CHERN Med-9, Med-10, Flight for Life Air-to-Ground)
+    med_freqs = (155_340_000, 155_400_000, 123_025_000, 123_050_000, 155_280_000)
+    if any(abs(f_hz - mf) <= 6_000 for mf in med_freqs) or any(k in band_name.upper() for k in ("CHERN", "MEDEVAC", "FLIGHT FOR LIFE", "HOSPITAL")):
+        return {
+            "is_voice_broadcast": False,
+            "is_any_voice": True,
+            "voice_label": "[🚑 MEDEVAC / HOSPITAL]",
+            "short_label": "MEDEVAC",
+            "voice_tag": "Medevac_Hospital",
+            "color": "#ec4899",  # pink
+            "bg": "#500724",
+        }
+
+    # 5. Trucker CB Traffic & 2-Way CB (26.965 - 27.405 MHz AM)
+    if 26_965_000 <= f_hz <= 27_405_000:
+        if abs(f_hz - 27_185_000) <= 6_000:
+            lbl = "[🚛 TRUCKER CH 19 HWY]"
+        elif abs(f_hz - 27_065_000) <= 6_000:
+            lbl = "[🚨 CB CH 09 EMERGENCY]"
+        elif abs(f_hz - 27_165_000) <= 6_000:
+            lbl = "[🚛 TRUCKER CH 17 N/S]"
+        else:
+            lbl = "[🚛 TRUCKER CB RADIO]"
+        return {
+            "is_voice_broadcast": False,
+            "is_any_voice": True,
+            "voice_label": lbl,
+            "short_label": "TRUCKER CB",
+            "voice_tag": "Trucker_CB",
+            "color": "#c084fc",  # purple
+            "bg": "#3b0764",
+        }
+
+    # 6. Railroad Road & Yard Operations (AAR Channels 160.215 - 161.565 MHz)
+    rail_freqs = (161_490_000, 160_590_000, 160_425_000, 161_550_000, 161_100_000, 160_890_000)
+    if (160_215_000 <= f_hz <= 161_565_000 and any(abs(f_hz - rf) <= 6_000 for rf in rail_freqs)) or any(
+        k in band_name.upper() for k in ("RAILROAD", "UNION PACIFIC", "ROYAL GORGE", "AAR", "JOINT LINE")
+    ):
+        return {
+            "is_voice_broadcast": False,
+            "is_any_voice": True,
+            "voice_label": "[🚆 RAILROAD ROAD/YARD]",
+            "short_label": "RAILROAD",
+            "voice_tag": "Railroad_Radio",
+            "color": "#eab308",  # gold / yellow
+            "bg": "#422006",
         }
 
     # 1. Commercial FM Broadcast (87.5 - 108.0 MHz, OIRT 65.8 - 74.0 MHz)
