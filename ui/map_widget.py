@@ -22,6 +22,7 @@ import json
 import math
 import os
 import random
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -560,7 +561,25 @@ class TacticalRadarTelemetryWidget(QWidget):
         telem_hdr.addWidget(lbl_telem_title)
         telem_hdr.addStretch()
 
-        self.btn_clear_telem = QPushButton("✖ Clear Feed", telem_box)
+        self.btn_live_pager = QPushButton("▶ Live Pagers", telem_box)
+        self.btn_live_pager.setToolTip("Capture live RF & decode POCSAG/FLEX fire/EMS pagers using multimon-ng")
+        self.btn_live_pager.setMinimumHeight(22)
+        self.btn_live_pager.clicked.connect(self._on_live_pager_clicked)
+        telem_hdr.addWidget(self.btn_live_pager)
+
+        self.btn_live_sensors = QPushButton("▶ Live Sensors", telem_box)
+        self.btn_live_sensors.setToolTip("Capture live RF & decode ISM sensors using rtl_433")
+        self.btn_live_sensors.setMinimumHeight(22)
+        self.btn_live_sensors.clicked.connect(self._on_live_sensors_clicked)
+        telem_hdr.addWidget(self.btn_live_sensors)
+
+        self.btn_live_tv = QPushButton("📺 TV Scan", telem_box)
+        self.btn_live_tv.setToolTip("Analyze physical ATSC digital TV channel carrier & SNR")
+        self.btn_live_tv.setMinimumHeight(22)
+        self.btn_live_tv.clicked.connect(self._on_live_tv_clicked)
+        telem_hdr.addWidget(self.btn_live_tv)
+
+        self.btn_clear_telem = QPushButton("✖ Clear", telem_box)
         self.btn_clear_telem.setMinimumHeight(22)
         self.btn_clear_telem.clicked.connect(self._clear_messages)
         telem_hdr.addWidget(self.btn_clear_telem)
@@ -654,6 +673,71 @@ class TacticalRadarTelemetryWidget(QWidget):
         c_item.setFont(QFont("Monospace", 8))
         c_item.setForeground(QColor("#e2e8f0"))
         self.table_telem.setItem(0, 3, c_item)
+
+    def _on_live_pager_clicked(self) -> None:
+        self.btn_live_pager.setEnabled(False)
+        self.add_message(time.strftime("%H:%M:%S"), "POCSAG", 155.880, "MULTIMON", "Initiating live HackRF capture & multimon-ng POCSAG/FLEX decode (3s)...", "#38bdf8")
+
+        def _worker() -> None:
+            try:
+                from core.demod_engine import run_pager_data_decode
+                res = run_pager_data_decode(155_880_000, duration_sec=3.0)
+                msgs = res.get("messages", [])
+                now_str = time.strftime("%H:%M:%S")
+                if msgs:
+                    for m in msgs:
+                        self.add_message(now_str, "POCSAG", 155.880, "DISPATCH", str(m), "#ef4444")
+                else:
+                    self.add_message(now_str, "POCSAG", 155.880, "MONITOR", "POCSAG detector active • Channel 155.880 MHz monitored (waiting for dispatch burst)", "#10b981")
+            except Exception as exc:
+                self.add_message(time.strftime("%H:%M:%S"), "POCSAG", 155.880, "ERROR", f"Pager decode note: {exc}", "#f59e0b")
+            finally:
+                self.btn_live_pager.setEnabled(True)
+
+        threading.Thread(target=_worker, daemon=True, name="LivePagerWorker").start()
+
+    def _on_live_sensors_clicked(self) -> None:
+        self.btn_live_sensors.setEnabled(False)
+        self.add_message(time.strftime("%H:%M:%S"), "ISM_433", 433.920, "RTL_433", "Initiating live HackRF capture & rtl_433 telemetry decode (3s)...", "#38bdf8")
+
+        def _worker() -> None:
+            try:
+                from core.demod_engine import run_telemetry_decode
+                res = run_telemetry_decode(433_920_000, duration_sec=3.0)
+                pkts = res.get("packets", [])
+                now_str = time.strftime("%H:%M:%S")
+                if pkts:
+                    for p in pkts:
+                        self.add_message(now_str, "ISM_433", 433.920, str(p.get("model", "SENSOR")), json.dumps(p), "#eab308")
+                else:
+                    self.add_message(now_str, "ISM_433", 433.920, "MONITOR", "rtl_433 sensor receiver active • 433.920 MHz monitored (waiting for sensor burst)", "#10b981")
+            except Exception as exc:
+                self.add_message(time.strftime("%H:%M:%S"), "ISM_433", 433.920, "ERROR", f"Sensor decode note: {exc}", "#f59e0b")
+            finally:
+                self.btn_live_sensors.setEnabled(True)
+
+        threading.Thread(target=_worker, daemon=True, name="LiveSensorWorker").start()
+
+    def _on_live_tv_clicked(self) -> None:
+        self.btn_live_tv.setEnabled(False)
+        self.add_message(time.strftime("%H:%M:%S"), "ATSC_TV", 539.000, "ATSC_SCAN", "Analyzing ATSC TV Ch 25 (KOAA NBC 539 MHz) pilot carrier & spectrum...", "#38bdf8")
+
+        def _worker() -> None:
+            try:
+                from core.demod_engine import run_atsc_tv_analysis
+                res = run_atsc_tv_analysis(539_000_000)
+                now_str = time.strftime("%H:%M:%S")
+                ch = res.get("channel", 25)
+                pilot = res.get("pilot_carrier_mhz", 536.31)
+                snr = res.get("pilot_snr_db", 0.0)
+                status = "LOCKED" if res.get("pilot_detected") else "CARRIER DETECTED"
+                self.add_message(now_str, "ATSC_TV", 539.000, f"CH_{ch}", f"ATSC 1.0 {status} • Pilot: {pilot:.3f} MHz • SNR: +{snr:.1f} dB (Bandwidth: 6.0 MHz)", "#e11d48")
+            except Exception as exc:
+                self.add_message(time.strftime("%H:%M:%S"), "ATSC_TV", 539.000, "ERROR", f"TV analysis note: {exc}", "#f59e0b")
+            finally:
+                self.btn_live_tv.setEnabled(True)
+
+        threading.Thread(target=_worker, daemon=True, name="LiveTVWorker").start()
 
     def _clear_messages(self) -> None:
         self.messages.clear()

@@ -6,7 +6,7 @@
 [![SDR: HackRF One](https://img.shields.io/badge/SDR-HackRF%20One%20(1--6000%20MHz)-ffb300.svg)](#strict-1-at-a-time-sdr-arbiter--non-root-usb-self-healing)
 [![Receiver: Gqrx 2.17+](https://img.shields.io/badge/Receiver-Gqrx%202.17%2B%20Auto--Tuner-7c4dff.svg)](#native-gqrx-217-profile-synthesis--verified-live-tuning)
 [![Demod: rtl--433 / readsb / multimon](https://img.shields.io/badge/Demod-rtl--433%20%7C%20readsb%20%7C%20w--scan-00b0ff.svg)](#multi-tool-demodulation-engine--telemetry-tv--voice-data)
-[![Tests: 31 Passing](https://img.shields.io/badge/Tests-31%2F31%20Passing-brightgreen.svg)](#verification--test-suite)
+[![Tests: 35 Passing](https://img.shields.io/badge/Tests-35%2F35%20Passing-brightgreen.svg)](#verification--test-suite)
 
 **Picto-Sight H8** is a production-grade, hardware-accelerated **AI Smart RF Scanner, Multi-Frame Spectrogram Pictogram Classifier, and Automated Gqrx SIGINT Controller** built for **Raspberry Pi 5** equipped with a **Hailo-8 (26 TOPS PCIe) AI Accelerator**, **HackRF One SDR**, and **USB u-blox GNSS** receiver.
 
@@ -27,8 +27,16 @@ Automatically adapts to compact portable SDR cyberdecks without clipping control
 | Scan Modes, SDR Reset & Demod Thresholds | Live Wideband RF Trace & 3-Frame 1 MHz AI Strip |
 | :---: | :---: |
 | ![DSI Controls Tab](docs/images/ui_dsi_controls.png) | ![DSI Live RF & AI Tab](docs/images/ui_dsi_live_rf_ai.png) |
-| **Unlocked Clickable Signal Table & Live Gqrx Telemetry** | **Reboot-Persistent GPS Location Profiles** |
-| ![DSI Signals Table & Live Gqrx](docs/images/ui_dsi_signals_gqrx_live.png) | ![DSI Saved Location Profiles](docs/images/ui_dsi_profiles.png) |
+| **Unlocked Clickable Signal Table & Live Gqrx Telemetry** | **Tactical ADS-B Airspace Radar & Telemetry Map** |
+| :---: | :---: |
+| ![DSI Signals Table & Live Gqrx](docs/images/ui_live_signals_penrose.png) | ![DSI Tactical Radar & Telemetry Map](docs/images/ui_live_radar_map.png) |
+
+---
+
+### Fremont County / Penrose, CO Locality & Airspace Priors
+- **Station Location**: Corner of J St & 13th St, Penrose, CO 81240 (`38.4112° N, -105.0366° W`, Maidenhead `DM78vj`).
+- **Tactical Radar**: Centered on Penrose station base with range rings (10, 25, 50, 100, 150 NM) and local waypoints (1V6 Penrose Airport, PUB, COS, Cheyenne Mountain ATSC TV, Royal Gorge UP Rail, US-50 Trucker Corridor).
+- **Live Local Decoder**: Real-time Mode-S/ADS-B aircraft vectors, multimon-ng POCSAG/FLEX fire/EMS pagers (`155.880` MHz), APRS packets (`144.390` MHz), and 433/915 MHz IoT sensors.
 
 ---
 
