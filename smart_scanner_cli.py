@@ -282,7 +282,7 @@ def main() -> None:
         from core.demod_engine import run_atsc_tv_analysis
         freq_hz = int(round(args.analyze_tv * 1e6))
         print(f"\nAnalyzing ATSC digital broadcast television channel at {args.analyze_tv:.4f} MHz...")
-        res = run_atsc_tv_analysis(freq_hz)
+        res = run_atsc_tv_analysis(freq_hz, measure_live=True)
         print(json.dumps(res, indent=2))
         return
 

@@ -649,10 +649,13 @@ def run_pager_data_decode(
         messages: List[str] = []
         for line in proc_multi.stdout.decode("utf-8", errors="ignore").splitlines():
             line = line.strip()
-            if not line:
+            if not line or line.startswith("Enabled demodulators"):
                 continue
             lines.append(line)
-            if any(k in line for k in ("POCSAG", "FLEX", "EAS", "Alpha", "Numeric")):
+            if any(
+                k in line
+                for k in ("POCSAG512:", "POCSAG1200:", "POCSAG2400:", "FLEX:", "FLEX_NEXT:", "EAS:", "Alpha:", "Numeric:")
+            ):
                 messages.append(line)
 
         return {

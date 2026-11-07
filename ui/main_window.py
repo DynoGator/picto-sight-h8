@@ -1615,29 +1615,34 @@ class SmartScannerMainWindow(QMainWindow):
             self._poll_hardware_and_gqrx()
             return
 
-        # 3. Specialized ISM / Pager / APRS Digital Telemetry Decoders
+        # 3. Specialized ISM / Pager / APRS Digital Telemetry Decoders -> Built-in Live Telemetry Feed
         if tool in ("rtl_433", "multimon_ng", "direwolf") and not profile.is_voice_broadcast:
             self.panel_map.stop_live_adsb()
             self.arbiter.stop_gqrx_cleanly()
             self.btn_release_gqrx.setVisible(False)
+            if self._is_compact_mode:
+                self._switch_deck_tab(4)
 
-            cmd = getattr(profile, "demod_cmd", "")
-            title = f"{profile.voice_label or profile.signal_name} ({profile.frequency_mhz:.3f} MHz)"
-            ok = launch_in_gui_terminal(cmd, window_title=title)
-            if ok:
-                self.dual_progress.set_progress(
-                    100.0,
-                    100.0,
-                    f"Launched {tool} decoder for {profile.frequency_mhz:.3f} MHz...",
-                    busy=False,
-                )
-                self.pill_gqrx.set_telemetry(
-                    f"{tool.upper()} LIVE",
-                    pct=100.0,
-                    accent_hex="#10b981",
-                    pulsing=False,
-                )
-                return
+            if tool == "rtl_433":
+                self.panel_map.decode_ism_frequency(int(profile.frequency_hz))
+            elif tool == "direwolf" or abs(profile.frequency_hz - 144_390_000) <= 25_000:
+                self.panel_map.decode_aprs_frequency(int(profile.frequency_hz))
+            else:
+                self.panel_map.decode_pager_frequency(int(profile.frequency_hz))
+
+            self.dual_progress.set_progress(
+                100.0,
+                100.0,
+                f"📊 Live {tool} telemetry capture active @ {profile.frequency_mhz:.3f} MHz in Tactical Feed!",
+                busy=False,
+            )
+            self.pill_gqrx.set_telemetry(
+                f"{tool.upper()} DECODE",
+                pct=100.0,
+                accent_hex="#38bdf8",
+                pulsing=False,
+            )
+            return
 
         # 4. Voice Broadcasts & Two-Way Analog/Voice Channels -> Live Gqrx Audio
         self.panel_map.stop_live_adsb()

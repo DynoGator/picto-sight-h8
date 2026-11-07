@@ -922,33 +922,37 @@ class TacticalRadarTelemetryWidget(QWidget):
             self.btn_live_sensors.setEnabled(True)
 
     def _on_live_pager_clicked(self) -> None:
+        self.decode_pager_frequency(155_880_000)
+
+    def decode_pager_frequency(self, freq_hz: int = 155_880_000) -> None:
+        f_mhz = freq_hz / 1e6
         self.stop_live_adsb()
         self.btn_live_pager.setEnabled(False)
         self.add_message(
-            time.strftime("%H:%M:%S"), "POCSAG", 155.880, "CAPTURE",
-            "Capturing 3s live HackRF IQ @ 155.880 MHz -> multimon-ng POCSAG/FLEX...", "#38bdf8",
+            time.strftime("%H:%M:%S"), "POCSAG", f_mhz, "CAPTURE",
+            f"Capturing 3s live HackRF IQ @ {f_mhz:.3f} MHz -> multimon-ng POCSAG/FLEX...", "#38bdf8",
         )
 
         def _worker() -> None:
             try:
                 from core.demod_engine import run_pager_data_decode
-                res = run_pager_data_decode(155_880_000, duration_sec=3.0)
+                res = run_pager_data_decode(int(freq_hz), duration_sec=3.0)
                 now_str = time.strftime("%H:%M:%S")
                 if not res.get("success"):
                     self._bg_msg_sig.emit(
-                        now_str, "POCSAG", 155.880, "NOTE", str(res.get("error") or "Busy"), "#f59e0b"
+                        now_str, "POCSAG", f_mhz, "NOTE", str(res.get("error") or "Busy"), "#f59e0b"
                     )
                 elif res.get("messages"):
                     for m in res["messages"]:
-                        self._bg_msg_sig.emit(now_str, "POCSAG", 155.880, "DECODED", str(m), "#ef4444")
+                        self._bg_msg_sig.emit(now_str, "POCSAG", f_mhz, "DECODED", str(m), "#ef4444")
                 else:
                     self._bg_msg_sig.emit(
-                        now_str, "POCSAG", 155.880, "CLEAR",
+                        now_str, "POCSAG", f_mhz, "CLEAR",
                         "3.0s RF capture clean — no POCSAG/FLEX burst during window.", "#10b981",
                     )
             except Exception as exc:
                 self._bg_msg_sig.emit(
-                    time.strftime("%H:%M:%S"), "POCSAG", 155.880, "ERR", str(exc), "#ef4444"
+                    time.strftime("%H:%M:%S"), "POCSAG", f_mhz, "ERR", str(exc), "#ef4444"
                 )
             finally:
                 self._bg_done_sig.emit("pager")
@@ -956,33 +960,37 @@ class TacticalRadarTelemetryWidget(QWidget):
         threading.Thread(target=_worker, daemon=True, name="LivePagerWorker").start()
 
     def _on_live_aprs_clicked(self) -> None:
+        self.decode_aprs_frequency(144_390_000)
+
+    def decode_aprs_frequency(self, freq_hz: int = 144_390_000) -> None:
+        f_mhz = freq_hz / 1e6
         self.stop_live_adsb()
         self.btn_live_aprs.setEnabled(False)
         self.add_message(
-            time.strftime("%H:%M:%S"), "APRS", 144.390, "CAPTURE",
-            "Capturing 4s live HackRF IQ @ 144.390 MHz -> AFSK1200 AX.25 decoder...", "#38bdf8",
+            time.strftime("%H:%M:%S"), "APRS", f_mhz, "CAPTURE",
+            f"Capturing 4s live HackRF IQ @ {f_mhz:.3f} MHz -> AFSK1200 AX.25 decoder...", "#38bdf8",
         )
 
         def _worker() -> None:
             try:
                 from core.demod_engine import run_aprs_data_decode
-                res = run_aprs_data_decode(144_390_000, duration_sec=4.0)
+                res = run_aprs_data_decode(int(freq_hz), duration_sec=4.0)
                 now_str = time.strftime("%H:%M:%S")
                 if not res.get("success"):
                     self._bg_msg_sig.emit(
-                        now_str, "APRS", 144.390, "NOTE", str(res.get("error") or "Busy"), "#f59e0b"
+                        now_str, "APRS", f_mhz, "NOTE", str(res.get("error") or "Busy"), "#f59e0b"
                     )
                 elif res.get("packets"):
                     for pkt in res["packets"]:
-                        self._bg_msg_sig.emit(now_str, "APRS", 144.390, "AX25", str(pkt), "#38bdf8")
+                        self._bg_msg_sig.emit(now_str, "APRS", f_mhz, "AX25", str(pkt), "#38bdf8")
                 else:
                     self._bg_msg_sig.emit(
-                        now_str, "APRS", 144.390, "CLEAR",
+                        now_str, "APRS", f_mhz, "CLEAR",
                         "4.0s RF capture clean — no AX.25 packet burst during window.", "#10b981",
                     )
             except Exception as exc:
                 self._bg_msg_sig.emit(
-                    time.strftime("%H:%M:%S"), "APRS", 144.390, "ERR", str(exc), "#ef4444"
+                    time.strftime("%H:%M:%S"), "APRS", f_mhz, "ERR", str(exc), "#ef4444"
                 )
             finally:
                 self._bg_done_sig.emit("aprs")
@@ -990,36 +998,40 @@ class TacticalRadarTelemetryWidget(QWidget):
         threading.Thread(target=_worker, daemon=True, name="LiveAPRSWorker").start()
 
     def _on_live_sensors_clicked(self) -> None:
+        self.decode_ism_frequency(433_920_000)
+
+    def decode_ism_frequency(self, freq_hz: int = 433_920_000) -> None:
+        f_mhz = freq_hz / 1e6
         self.stop_live_adsb()
         self.btn_live_sensors.setEnabled(False)
         self.add_message(
-            time.strftime("%H:%M:%S"), "ISM_433", 433.920, "CAPTURE",
-            "Capturing 3s live HackRF @ 433.920 MHz -> rtl_433 telemetry decoder...", "#38bdf8",
+            time.strftime("%H:%M:%S"), "ISM", f_mhz, "CAPTURE",
+            f"Capturing 3s live HackRF @ {f_mhz:.3f} MHz -> rtl_433 telemetry decoder...", "#38bdf8",
         )
 
         def _worker() -> None:
             try:
                 from core.demod_engine import run_telemetry_decode
-                res = run_telemetry_decode(433_920_000, duration_sec=3.0)
+                res = run_telemetry_decode(int(freq_hz), duration_sec=3.0)
                 now_str = time.strftime("%H:%M:%S")
                 pkts = res.get("packets", [])
                 if pkts:
                     for p in pkts:
                         self._bg_msg_sig.emit(
-                            now_str, "ISM_433", 433.920, str(p.get("model", "SENSOR")), json.dumps(p), "#eab308"
+                            now_str, "ISM", f_mhz, str(p.get("model", "SENSOR")), json.dumps(p), "#eab308"
                         )
                 elif not res.get("success"):
                     self._bg_msg_sig.emit(
-                        now_str, "ISM_433", 433.920, "NOTE", str(res.get("error") or "Busy"), "#f59e0b"
+                        now_str, "ISM", f_mhz, "NOTE", str(res.get("error") or "Busy"), "#f59e0b"
                     )
                 else:
                     self._bg_msg_sig.emit(
-                        now_str, "ISM_433", 433.920, "CLEAR",
+                        now_str, "ISM", f_mhz, "CLEAR",
                         "3.0s rtl_433 capture clean — no OOK/FSK sensor frame during window.", "#10b981",
                     )
             except Exception as exc:
                 self._bg_msg_sig.emit(
-                    time.strftime("%H:%M:%S"), "ISM_433", 433.920, "ERR", str(exc), "#ef4444"
+                    time.strftime("%H:%M:%S"), "ISM", f_mhz, "ERR", str(exc), "#ef4444"
                 )
             finally:
                 self._bg_done_sig.emit("sensors")

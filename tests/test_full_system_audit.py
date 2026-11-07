@@ -384,6 +384,25 @@ class TestFullSystemAudit(unittest.TestCase):
                 win.handle_signal_demod_action(tv_prof)
                 self.assertAlmostEqual(opened["freq"], 539_000_000.0)
 
+            # Verify Pager / ISM / APRS profiles route into built-in Tab 5 Tactical Feed without spawning terminal
+            pager_called = {"hz": 0}
+            pgr_prof = ClassifiedSignalProfile(**{**tv_prof.to_dict(), "frequency_hz": 152_480_000, "frequency_mhz": 152.48, "profile_category": "Public_Safety", "demod_tool": "multimon_ng", "is_voice_broadcast": False, "is_any_voice": False, "atsc_channel": None})
+            with patch.object(win.panel_map, "decode_pager_frequency", side_effect=lambda hz: pager_called.__setitem__("hz", hz)):
+                win._switch_deck_tab(2)
+                win.handle_signal_demod_action(pgr_prof)
+                self.assertEqual(pager_called["hz"], 152_480_000)
+                self.assertEqual(win.deck_stack.currentIndex(), 4)
+
+            # Verify HDMI Studio 4-pane topology switch works without errors
+            win._layout_preference = "STUDIO"
+            win._apply_topology(force=True)
+            _QT_APP.processEvents()
+            self.assertFalse(win._is_compact_mode)
+            win._layout_preference = "DECK"
+            win._apply_topology(force=True)
+            _QT_APP.processEvents()
+            self.assertTrue(win._is_compact_mode)
+
             # Verify reboot-persistent UI settings round-trip
             win._select_scan_mode("DEEP")
             win.spin_min_mhz.setValue(154)
