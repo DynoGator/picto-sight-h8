@@ -21,6 +21,7 @@ Provides crash-free terrestrial Broadcast TV demodulation on HackRF One:
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import logging
 import math
@@ -354,6 +355,7 @@ def _run_atsc_gnuradio_worker(
     vga_gain: int,
     amp_enable: int,
     udp_port: int,
+    parent_pid: int = 0,
 ) -> int:
     """
     Isolated OS process executing GNU Radio ATSC 1.0 8VSB demodulation + live 8 MHz FFT probe.
@@ -458,6 +460,8 @@ def _run_atsc_gnuradio_worker(
     tb.start()
     try:
         while not stop_flag:
+            if parent_pid > 1 and not os.path.exists(f"/proc/{parent_pid}"):
+                break
             time.sleep(0.35)
             now = time.time()
             with state_lock:
@@ -509,6 +513,7 @@ def _run_analog_ntsc_worker(
     lna_gain: int,
     vga_gain: int,
     amp_enable: int,
+    parent_pid: int = 0,
 ) -> int:
     """
     Isolated OS process capturing HackRF 4.0 MSPS IQ around the visual carrier
@@ -545,6 +550,8 @@ def _run_analog_ntsc_worker(
 
     try:
         while not stop_flag and proc.poll() is None and proc.stdout is not None:
+            if parent_pid > 1 and not os.path.exists(f"/proc/{parent_pid}"):
+                break
             buf = proc.stdout.read(bytes_needed)
             if not buf or len(buf) < bytes_needed:
                 break
@@ -623,6 +630,7 @@ class BroadcastTVController:
         self._callsign: str = "KOAA-TV (NBC 5)"
         self.arbiter = get_sdr_arbiter()
         self.arbiter.register_aux_stopper("TV_DEMOD", self.stop)
+        atexit.register(self.stop)
 
     def is_running(self) -> bool:
         with self._lock:
@@ -684,6 +692,7 @@ class BroadcastTVController:
             "--lna", str(int(lna_gain)),
             "--vga", str(int(vga_gain)),
             "--amp", str(1 if amp_enable else 0),
+            "--parent-pid", str(os.getpid()),
         ]
 
         try:
@@ -846,15 +855,16 @@ def main() -> int:
     parser.add_argument("--vga", type=int, default=28)
     parser.add_argument("--amp", type=int, default=1)
     parser.add_argument("--udp-port", type=int, default=TV_UDP_PORT)
+    parser.add_argument("--parent-pid", type=int, default=0)
     args = parser.parse_args()
 
     if args.worker:
         if args.mode == "ANALOG_NTSC":
             return _run_analog_ntsc_worker(
-                args.freq, args.channel, args.callsign, args.lna, args.vga, args.amp
+                args.freq, args.channel, args.callsign, args.lna, args.vga, args.amp, args.parent_pid
             )
         return _run_atsc_gnuradio_worker(
-            args.freq, args.channel, args.callsign, args.lna, args.vga, args.amp, args.udp_port
+            args.freq, args.channel, args.callsign, args.lna, args.vga, args.amp, args.udp_port, args.parent_pid
         )
 
     # Interactive CLI launch

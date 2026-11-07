@@ -204,6 +204,8 @@ class LiveADSBReceiver:
         self._chunks_piped = 0
         self.arbiter = get_sdr_arbiter()
         self.arbiter.register_aux_stopper("ADSB_LIVE", self.stop)
+        import atexit
+        atexit.register(self.stop)
 
     def is_running(self) -> bool:
         with self._lock:
