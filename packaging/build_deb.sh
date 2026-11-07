@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # packaging/build_deb.sh — Debian 13 (Trixie) Native .deb Package Builder
-# Builds: dist/picto-sight-h8_3.0.0-1+trixie_<arch>.deb
+# Builds: dist/picto-sight-h8_3.0.0-1.trixie_<arch>.deb
 #
 # Install resulting package on Raspberry Pi OS / Debian 13 Trixie with:
 #   sudo apt update
-#   sudo apt install -y ./dist/picto-sight-h8_3.0.0-1+trixie_arm64.deb
+#   sudo apt install -y ./dist/picto-sight-h8_3.0.0-1.trixie_arm64.deb
 # ==============================================================================
 
 set -euo pipefail
@@ -15,7 +15,7 @@ cd "${REPO_DIR}"
 
 PKG_NAME="picto-sight-h8"
 PKG_VERSION="3.0.0"
-PKG_RELEASE="1+trixie"
+PKG_RELEASE="1.trixie"
 ARCH="$(dpkg --print-architecture 2>/dev/null || echo "arm64")"
 DEB_FILENAME="${PKG_NAME}_${PKG_VERSION}-${PKG_RELEASE}_${ARCH}.deb"
 

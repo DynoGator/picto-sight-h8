@@ -14,7 +14,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), sea
   - De-conflicts background SDR-grabbing systemd units (`readsb.service`) automatically so your HackRF One isn't held hostage at boot.
   - Installs `/etc/udev/rules.d/53-hackrf-picto-sight.rules` for passwordless non-root `USBDEVFS_RESET` recovery and links `/usr/local/bin/picto-sight` globally.
 - **Native Debian 13 (Trixie) `.deb` Package Builder (`packaging/build_deb.sh`)**:
-  - Builds `dist/picto-sight-h8_3.0.0-1+trixie_arm64.deb` with strict Debian 13 `Depends`/`Recommends`, `/opt/picto-sight-h8` payload, `/usr/bin/picto-sight` launcher, system XDG desktop icon, udev rules, and automated `postinst` `.venv --system-site-packages` + Gqrx provisioning.
+  - Builds `dist/picto-sight-h8_3.0.0-1.trixie_arm64.deb` with strict Debian 13 `Depends`/`Recommends`, `/opt/picto-sight-h8` payload, `/usr/bin/picto-sight` launcher, system XDG desktop icon, udev rules, and automated `postinst` `.venv --system-site-packages` + Gqrx provisioning.
   - Added `core.get_runtime_data_dir()` (`PICTOSIGHT_DATA_DIR` / `~/.local/share/picto-sight-h8` fallback) so system-wide read-only `/opt` installations store user profiles, exports, and logs cleanly without permission errors.
 - **System Doctor & Out-of-the-Box Gqrx Provisioner (`scripts/doctor_check.py`)**:
   - `picto-sight --doctor` (`--doctor-json`) audits 25 OS, Python, C++ PyBind11 (`gnuradio.dtv`, `osmosdr`, `hailo_platform`), RF binary, systemd conflict, `plugdev`, USB `sysfs`, Hailo-8 `/dev/hailo0`, model weight, and Gqrx config checks in < 1 second.

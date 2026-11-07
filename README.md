@@ -51,11 +51,11 @@ curl -fsSL https://raw.githubusercontent.com/DynoGator/picto-sight-h8/main/insta
 ```
 
 ### Method 2 — Native Debian 13 (Trixie) `.deb` Package (`arm64`)
-Download `picto-sight-h8_3.0.0-1+trixie_arm64.deb` from [**GitHub Releases (`v3.0.0`)**](https://github.com/DynoGator/picto-sight-h8/releases/latest) (or build it locally via `./packaging/build_deb.sh`) and install with `apt`:
+Download `picto-sight-h8_3.0.0-1.trixie_arm64.deb` from [**GitHub Releases (`v3.0.0`)**](https://github.com/DynoGator/picto-sight-h8/releases/latest) (or build it locally via `./packaging/build_deb.sh`) and install with `apt`:
 
 ```bash
 sudo apt update
-sudo apt install -y ./picto-sight-h8_3.0.0-1+trixie_arm64.deb
+sudo apt install -y ./picto-sight-h8_3.0.0-1.trixie_arm64.deb
 picto-sight --doctor
 ```
 

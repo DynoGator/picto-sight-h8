@@ -33,7 +33,7 @@ Prefer clean APT package management under `/opt/picto-sight-h8`? Download the la
 ```bash
 # Install directly from downloaded release .deb:
 sudo apt update
-sudo apt install -y ./picto-sight-h8_3.0.0-1+trixie_arm64.deb
+sudo apt install -y ./picto-sight-h8_3.0.0-1.trixie_arm64.deb
 
 # Verify all 25 hardware & software stack checks:
 picto-sight --doctor
@@ -44,7 +44,7 @@ picto-sight --doctor
 git clone https://github.com/DynoGator/picto-sight-h8.git
 cd picto-sight-h8
 ./packaging/build_deb.sh
-# Output -> dist/picto-sight-h8_3.0.0-1+trixie_arm64.deb
+# Output -> dist/picto-sight-h8_3.0.0-1.trixie_arm64.deb
 ```
 
 > [!NOTE]
