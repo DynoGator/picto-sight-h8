@@ -21,8 +21,10 @@ from typing import Optional, Dict, Any
 
 logger = logging.getLogger("smart_scanner.gps")
 
+from core import get_runtime_data_dir
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-LOCALITY_CACHE_PATH = PROJECT_ROOT / "profiles" / "last_known_locality.json"
+LOCALITY_CACHE_PATH = get_runtime_data_dir() / "profiles" / "last_known_locality.json"
 
 
 @dataclass

@@ -212,8 +212,31 @@ def main() -> None:
     parser.add_argument("--voice-only", action="store_true", help="Filter output list to only voice broadcast stations (FM/AM/SW/NOAA)")
     parser.add_argument("--fremont-guide", action="store_true", help="Display local frequency guide for Fremont County, Penrose, CO & surrounding area")
     parser.add_argument("--list-profiles", action="store_true", help="List permanently saved Location Profiles")
+    parser.add_argument("--doctor", action="store_true", help="Run full-stack OS, SDR, Hailo-8, GNU Radio TV, ADS-B & Gqrx dependency verification")
+    parser.add_argument("--doctor-json", action="store_true", help="Output full-stack system doctor report as JSON")
+    parser.add_argument("--provision-gqrx", action="store_true", help="Provision clean out-of-the-box Gqrx 2.17+ configs & starter bookmarks")
+    parser.add_argument("-v", "--version", action="store_true", help="Print Picto-Sight H8 version and exit")
 
     args = parser.parse_args()
+
+    if args.version:
+        from core import __release_codename__, __version__
+        print(f"Picto-Sight H8 v{__version__} ({__release_codename__})")
+        return
+
+    if args.provision_gqrx:
+        from scripts.doctor_check import provision_gqrx_out_of_box
+        res = provision_gqrx_out_of_box()
+        print(json.dumps(res, indent=2))
+        return
+
+    if args.doctor or args.doctor_json:
+        from scripts.doctor_check import print_doctor_report, run_doctor_check
+        rep = run_doctor_check()
+        if args.doctor_json:
+            print(json.dumps(rep, indent=2))
+            raise SystemExit(0 if rep["ready"] else 1)
+        raise SystemExit(print_doctor_report(rep))
 
     if args.fremont_guide:
         from core.profile_organizer import FREMONT_PENROSE_FREQUENCY_GUIDE, CB_CHANNELS_HZ
@@ -241,7 +264,6 @@ def main() -> None:
         return
 
     if args.telemetry is not None:
-        import json
         from core.demod_engine import run_telemetry_decode
         freq_hz = int(round(args.telemetry * 1e6))
         print(f"\nInitiating live HackRF telemetry decode at {args.telemetry:.4f} MHz via rtl_433 (5s capture)...")
@@ -257,7 +279,6 @@ def main() -> None:
         return
 
     if args.decode_data is not None:
-        import json
         from core.demod_engine import run_pager_data_decode, run_aprs_data_decode
         freq_hz = int(round(args.decode_data * 1e6))
         print(f"\nInitiating live digital data demodulation at {args.decode_data:.4f} MHz (multimon-ng)...")
@@ -278,7 +299,6 @@ def main() -> None:
         return
 
     if args.analyze_tv is not None:
-        import json
         from core.demod_engine import run_atsc_tv_analysis
         freq_hz = int(round(args.analyze_tv * 1e6))
         print(f"\nAnalyzing ATSC digital broadcast television channel at {args.analyze_tv:.4f} MHz...")

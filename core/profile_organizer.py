@@ -396,7 +396,9 @@ class SignalProfileOrganizer:
         export_dir: Optional[str] = None,
         profiles_dir: Optional[str] = None,
     ) -> None:
-        base = Path(__file__).resolve().parent.parent
+        from core import get_runtime_data_dir
+
+        base = get_runtime_data_dir()
         self.export_dir = Path(export_dir) if export_dir else (base / "export")
         self.profiles_dir = Path(profiles_dir) if profiles_dir else (base / "profiles")
         self.thumbs_dir = self.profiles_dir / "thumbnails"
@@ -645,10 +647,17 @@ class SignalProfileOrganizer:
     def _rebuild_profiles_index(self) -> List[Dict[str, Any]]:
         entries: List[Dict[str, Any]] = []
         for p_file in sorted(self.profiles_dir.glob("*.json"), reverse=True):
-            if p_file.name in ("latest_profile.json", "profiles_index.json", "last_known_locality.json"):
+            if p_file.name in (
+                "latest_profile.json",
+                "profiles_index.json",
+                "last_known_locality.json",
+                "ui_settings.json",
+            ):
                 continue
             try:
                 raw = json.loads(p_file.read_text(encoding="utf-8"))
+                if not isinstance(raw, dict) or "signals" not in raw:
+                    continue
                 entries.append(
                     {
                         "profile_id": raw.get("profile_id", p_file.stem),

@@ -134,7 +134,7 @@ class SmartScannerMainWindow(QMainWindow):
         super().__init__()
         self._startup_auto_scan = auto_scan_mode.upper().strip() if auto_scan_mode else None
 
-        self.setWindowTitle("Picto-Sight H8 • AI Smart RF Scanner • Hailo-8 + HackRF + Gqrx")
+        self.setWindowTitle("Picto-Sight H8 v3.0 • AI Smart RF Scanner • Hailo-8 + HackRF + Gqrx")
         icon_svg = Path(__file__).resolve().parent.parent / "icons" / "smart-scanner.svg"
         if icon_svg.exists():
             self.setWindowIcon(QIcon(str(icon_svg)))

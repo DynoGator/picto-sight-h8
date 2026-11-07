@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "picto-sight-h8"
-version = "2.1.0"
-description = "Hailo-8 (26 TOPS) AI-Powered Multi-Layer RF Smart Scanner, Spectrogram Pictogram Classifier & Automated Gqrx SIGINT Controller for Raspberry Pi 5 & HackRF One"
+version = "3.0.0"
+description = "Hailo-8 (26 TOPS) AI-Powered Multi-Layer RF Smart Scanner, 10-Class Spectrogram Classifier, Live ATSC/NTSC TV + 1090 MHz ADS-B Radar & Automated Gqrx SIGINT Studio for Raspberry Pi 5 (Debian 13 Trixie) & HackRF One"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
@@ -18,10 +18,13 @@ keywords = [
   "hailo-8",
   "npu",
   "gqrx",
+  "atsc",
+  "ads-b",
   "rf-scanner",
   "spectrogram",
   "sigint",
   "raspberry-pi-5",
+  "debian-trixie",
   "pyqt6"
 ]
 classifiers = [
@@ -36,6 +39,7 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Topic :: Communications :: Ham Radio",
+  "Topic :: Multimedia :: Video :: Display",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
@@ -43,10 +47,20 @@ dependencies = [
   "pyserial>=3.5",
 ]
 
+[project.scripts]
+picto-sight = "smart_scanner_cli:main"
+
 [project.urls]
 Homepage = "https://github.com/DynoGator/picto-sight-h8"
 Repository = "https://github.com/DynoGator/picto-sight-h8.git"
+Releases = "https://github.com/DynoGator/picto-sight-h8/releases"
 Issues = "https://github.com/DynoGator/picto-sight-h8/issues"
+
+[tool.setuptools]
+py-modules = ["smart_scanner_cli"]
+
+[tool.setuptools.packages.find]
+include = ["core*", "ui*", "scripts*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,0 +1,6 @@
+# Picto-Sight H8 — HackRF One / Jawbreaker / Rad1o non-root USB & USBDEVFS_RESET (0x5514) rules
+# Allows plugdev members (and active local desktop sessions via uaccess) to open HackRF One
+# and execute kernel-level USB endpoint recovery without root privileges.
+ATTR{idVendor}=="1d50", ATTR{idProduct}=="6089", SYMLINK+="hackrf-one-%k", MODE="0666", GROUP="plugdev", TAG+="uaccess"
+ATTR{idVendor}=="1d50", ATTR{idProduct}=="604b", SYMLINK+="hackrf-jawbreaker-%k", MODE="0666", GROUP="plugdev", TAG+="uaccess"
+ATTR{idVendor}=="1d50", ATTR{idProduct}=="cc15", SYMLINK+="rad1o-%k", MODE="0666", GROUP="plugdev", TAG+="uaccess"

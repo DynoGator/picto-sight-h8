@@ -1,7 +1,13 @@
-# Picto-Sight H8 Python Dependencies
-# Note: On Raspberry Pi OS (Bookworm / Trixie) with a Hailo-8 / Hailo-8L AI HAT+,
-# create the virtual environment with `--system-site-packages` (see ./install.sh)
-# so `hailo_platform` (python3-hailort) and system Qt6/Wayland plugins are inherited.
+# Picto-Sight H8 v3.0.0 Python Dependencies
+# ==============================================================================
+# IMPORTANT FOR RASPBERRY PI OS / DEBIAN 13 (TRIXIE):
+# Create the virtual environment with `--system-site-packages` (automated by
+# `./install.sh` and the `picto-sight-h8` `.deb` package) so Debian APT's
+# C++/SWIG/PyBind11 bindings are inherited directly without multi-hour source builds:
+#   - `hailo_platform` (python3-hailort 4.23+ for Hailo-8 26 TOPS PCIe NPU)
+#   - `gnuradio` & `gnuradio.dtv` (gnuradio 3.10.12+ ATSC 8VSB TV demodulator)
+#   - `osmosdr` (gr-osmosdr 0.2.6+ HackRF streaming source)
+#   - `PyQt6` & `cv2` (python3-pyqt6 6.9+, python3-opencv 4.10+ Wayland/DSI native)
 
 numpy>=1.26.0
 opencv-python>=4.8.0

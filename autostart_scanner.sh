@@ -1,21 +1,32 @@
 #!/bin/bash
-# Picto-Sight H8 | Boot Autostart Supervisor for Wayland / labwc Desktop
+# Picto-Sight H8 v3.0.0 | Boot Autostart Supervisor for Wayland / labwc Desktop
 # Waits for Wayland compositor & PipeWire audio readiness, sanitizes Gqrx crash flags,
 # and launches a single clean instance of the Picto-Sight H8 SIGINT Studio.
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE_PATH="${BASH_SOURCE[0]}"
+while [ -L "${SOURCE_PATH}" ]; do
+    LINK_DIR="$(cd -P "$(dirname "${SOURCE_PATH}")" && pwd)"
+    SOURCE_PATH="$(readlink "${SOURCE_PATH}")"
+    [[ "${SOURCE_PATH}" != /* ]] && SOURCE_PATH="${LINK_DIR}/${SOURCE_PATH}"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "${SOURCE_PATH}")" && pwd)"
+
 UID_NUM="$(id -u)"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/${UID_NUM}}"
 export DISPLAY="${DISPLAY:-:0}"
 
-LOG_DIR="${SCRIPT_DIR}/logs"
+if [ -w "${SCRIPT_DIR}" ]; then
+    LOG_DIR="${SCRIPT_DIR}/logs"
+else
+    LOG_DIR="${HOME}/.local/share/picto-sight-h8/logs"
+fi
 mkdir -p "$LOG_DIR"
 AUTOSTART_LOG="${LOG_DIR}/autostart.log"
 
-echo "[$(date -Is)] Boot autostart triggered (PID $$)" >> "$AUTOSTART_LOG"
+echo "[$(date -Is)] Picto-Sight H8 v3.0.0 boot autostart triggered (PID $$)" >> "$AUTOSTART_LOG"
 
 # Wait up to 25s for Wayland compositor socket (wayland-0 / wayland-1)
-for i in $(seq 1 50); do
+for _ in $(seq 1 50); do
     for sock in "${XDG_RUNTIME_DIR}"/wayland-*; do
         if [ -S "$sock" ]; then
             export WAYLAND_DISPLAY="$(basename "$sock")"

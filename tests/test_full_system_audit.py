@@ -439,6 +439,38 @@ class TestFullSystemAudit(unittest.TestCase):
             win2.close()
             win.close()
 
+    def test_08_version_doctor_gqrx_provision_and_deb_portability(self) -> None:
+        import core
+        from core import get_runtime_data_dir
+        from scripts.doctor_check import provision_gqrx_out_of_box, run_doctor_check
+
+        self.assertEqual(core.__version__, "3.0.0")
+        self.assertEqual(core.__release_codename__, "Trixie-Ghost-Spectrum")
+
+        # 1. Verify PICTOSIGHT_DATA_DIR override & read-only /opt fallback portability
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict("os.environ", {"PICTOSIGHT_DATA_DIR": tmpdir}):
+                resolved = get_runtime_data_dir()
+                self.assertEqual(resolved, Path(tmpdir).resolve())
+
+            with patch.dict("os.environ", {"PICTOSIGHT_DATA_DIR": "", "HOME": tmpdir}):
+                with patch("os.access", return_value=False):
+                    ro_fallback = get_runtime_data_dir()
+                    self.assertEqual(ro_fallback, Path(tmpdir) / ".local" / "share" / "picto-sight-h8")
+                    self.assertTrue(ro_fallback.exists())
+
+        # 2. Verify System Doctor passes all required stack checks
+        report = run_doctor_check()
+        self.assertEqual(report["version"], "3.0.0")
+        self.assertTrue(report["ready"])
+        self.assertEqual(report["required_failures"], 0)
+
+        # 3. Verify out-of-the-box Gqrx provisioner writes crash-free config
+        prov = provision_gqrx_out_of_box(force_bookmarks=False)
+        self.assertTrue(prov["ok"])
+        default_conf_txt = Path(prov["default_conf"]).read_text(encoding="utf-8", errors="ignore")
+        self.assertNotIn("crash=true", default_conf_txt.lower())
+
 
 if __name__ == "__main__":
     unittest.main()

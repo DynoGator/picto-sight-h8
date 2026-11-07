@@ -217,7 +217,7 @@ class SDRResourceArbiter:
         self._detail = "HackRF One idle & ready"
         self._handoff_pct = 100.0
         self._serial = ""
-        self._firmware = "v2.1.0"
+        self._firmware = "v3.0.0"
         self._hardware_present = False
         self._was_gqrx_running = False
         self._last_usb_reset_ts = 0.0
