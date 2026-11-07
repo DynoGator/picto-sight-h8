@@ -106,6 +106,7 @@ class SmartScannerMainWindow(QMainWindow):
     """
 
     BAND_PRESETS: List[Tuple[str, int, int]] = [
+        ("🌐 Full Spectrum Ultra-Zoom (1 - 6000 MHz)", 1, 6000),
         ("FM Broadcast + Airband (88 - 137 MHz)", 88, 137),
         ("Fremont Co Fire / Sheriff / SAR / Med (154 - 156 MHz)", 154, 156),
         ("Trucker CB Radio All 40 Channels (26 - 28 MHz)", 26, 28),
@@ -119,7 +120,7 @@ class SmartScannerMainWindow(QMainWindow):
         ("ISM 915 MHz Telemetry (902 - 928 MHz)", 902, 928),
         ("ADS-B 1090 MHz Aviation Radar (1089 - 1091 MHz)", 1089, 1091),
         ("Full VHF/UHF Survey (88 - 480 MHz)", 88, 480),
-        ("Custom Frequency Range", 88, 137),
+        ("Custom Frequency Range", 1, 6000),
     ]
 
     SQUELCH_OPTIONS: List[Tuple[str, str]] = [
@@ -134,7 +135,7 @@ class SmartScannerMainWindow(QMainWindow):
         super().__init__()
         self._startup_auto_scan = auto_scan_mode.upper().strip() if auto_scan_mode else None
 
-        self.setWindowTitle("Picto-Sight H8 v3.0 • AI Smart RF Scanner • Hailo-8 + HackRF + Gqrx")
+        self.setWindowTitle("Picto-Sight H8 v3.1 • Ultra-Zoom AI RF Scanner • Hailo-8 + HackRF + Gqrx")
         icon_svg = Path(__file__).resolve().parent.parent / "icons" / "smart-scanner.svg"
         if icon_svg.exists():
             self.setWindowIcon(QIcon(str(icon_svg)))
@@ -170,6 +171,7 @@ class SmartScannerMainWindow(QMainWindow):
         self._loading_ui_settings: bool = False
         self._ui_settings_path: Path = self.organizer.profiles_dir / "ui_settings.json"
         self._tv_dialog: Optional[BroadcastTVReceiverDialog] = None
+        self._active_gqrx_freq_hz: Optional[int] = None
 
         # Layout topology state: "AUTO", "DECK" (800x480 5in touch), "STUDIO" (1080p+ HDMI)
         self._layout_preference: str = "AUTO"
@@ -431,9 +433,9 @@ class SmartScannerMainWindow(QMainWindow):
         self.mode_btn_group = QButtonGroup(self)
         self.mode_btn_group.setExclusive(True)
 
-        self.btn_mode_quick = QPushButton("⚡ QUICK SCAN\nFast 3-Frame 1MHz AI", container)
-        self.btn_mode_deep = QPushButton("◈ DEEP SCAN\n5x Avg + 5-Frame 1MHz AI", container)
-        self.btn_mode_custom = QPushButton("⚙ CUSTOM SCAN\nFull Manual RF + Gains", container)
+        self.btn_mode_quick = QPushButton("⚡ FULL SPECTRUM\n3-Pass • 7.6Hz Zoom (~2.5m)", container)
+        self.btn_mode_deep = QPushButton("◈ DEEP ULTRA-ZOOM\n5-Pass • Max Dwell (~6-9m)", container)
+        self.btn_mode_custom = QPushButton("⚙ CUSTOM SCAN\nManual Passes + Gains", container)
 
         for idx, (m_name, btn) in enumerate(
             (("QUICK", self.btn_mode_quick), ("DEEP", self.btn_mode_deep), ("CUSTOM", self.btn_mode_custom))
@@ -448,7 +450,7 @@ class SmartScannerMainWindow(QMainWindow):
         self.btn_mode_quick.setChecked(True)
         vbox.addLayout(modes_hbox)
 
-        # --- Section B: Frequency Band Preset & Range ---
+        # --- Section B: Frequency Band Preset & Range (Defaults to Full-Spectrum 1 - 6000 MHz) ---
         band_frame = QFrame(container)
         band_frame.setObjectName("highlightBox")
         b_grid = QGridLayout(band_frame)
@@ -466,7 +468,7 @@ class SmartScannerMainWindow(QMainWindow):
         b_grid.addWidget(QLabel("Start MHz:", band_frame), 1, 0)
         self.spin_min_mhz = QSpinBox(band_frame)
         self.spin_min_mhz.setRange(1, 5990)
-        self.spin_min_mhz.setValue(88)
+        self.spin_min_mhz.setValue(1)
         self.spin_min_mhz.setSuffix(" MHz")
         self.spin_min_mhz.valueChanged.connect(lambda _: self._save_ui_settings())
         b_grid.addWidget(self.spin_min_mhz, 1, 1)
@@ -474,7 +476,7 @@ class SmartScannerMainWindow(QMainWindow):
         b_grid.addWidget(QLabel("Stop MHz:", band_frame), 1, 2)
         self.spin_max_mhz = QSpinBox(band_frame)
         self.spin_max_mhz.setRange(2, 6000)
-        self.spin_max_mhz.setValue(137)
+        self.spin_max_mhz.setValue(6000)
         self.spin_max_mhz.setSuffix(" MHz")
         self.spin_max_mhz.valueChanged.connect(lambda _: self._save_ui_settings())
         b_grid.addWidget(self.spin_max_mhz, 1, 3)
@@ -507,11 +509,11 @@ class SmartScannerMainWindow(QMainWindow):
         d_grid.addWidget(QLabel("Min SNR:", demod_frame), 1, 0)
         self.slider_snr = QSlider(Qt.Orientation.Horizontal, demod_frame)
         self.slider_snr.setRange(3, 35)
-        self.slider_snr.setValue(9)
+        self.slider_snr.setValue(8)
         self.slider_snr.valueChanged.connect(self._on_strength_sliders_changed)
         d_grid.addWidget(self.slider_snr, 1, 1, 1, 2)
 
-        self.lbl_snr_pill = QLabel("SNR >= +9 dB", demod_frame)
+        self.lbl_snr_pill = QLabel("SNR >= +8 dB", demod_frame)
         self.lbl_snr_pill.setObjectName("valuePillCyan")
         d_grid.addWidget(self.lbl_snr_pill, 1, 3)
 
@@ -540,20 +542,28 @@ class SmartScannerMainWindow(QMainWindow):
 
         vbox.addWidget(demod_frame)
 
-        # --- Section D: Custom Scan Hardware & Layer 3 Frame Controls ---
+        # --- Section D: Custom Scan Hardware, Ultra-Zoom Frames & Multi-Pass Dwell Controls ---
         self.custom_frame = QFrame(container)
         self.custom_frame.setObjectName("cardPanel")
         c_hbox = QHBoxLayout(self.custom_frame)
-        c_hbox.setContentsMargins(7, 4, 7, 4)
-        c_hbox.setSpacing(6)
+        c_hbox.setContentsMargins(6, 4, 6, 4)
+        c_hbox.setSpacing(5)
 
-        c_hbox.addWidget(QLabel("1MHz Frames:", self.custom_frame))
+        c_hbox.addWidget(QLabel("Frames:", self.custom_frame))
         self.spin_l3_frames = QSpinBox(self.custom_frame)
-        self.spin_l3_frames.setRange(3, 10)
-        self.spin_l3_frames.setValue(3)
-        self.spin_l3_frames.setToolTip("Minimum 3 spectrogram frames per 1 MHz in Layer 3")
+        self.spin_l3_frames.setRange(3, 96)
+        self.spin_l3_frames.setValue(24)
+        self.spin_l3_frames.setToolTip("Dual-Scale Macro + 244Hz/bin Ultra-Zoom spectrogram frames per pass")
         self.spin_l3_frames.valueChanged.connect(lambda _: self._save_ui_settings())
         c_hbox.addWidget(self.spin_l3_frames)
+
+        c_hbox.addWidget(QLabel("Passes:", self.custom_frame))
+        self.spin_dwell_passes = QSpinBox(self.custom_frame)
+        self.spin_dwell_passes.setRange(1, 12)
+        self.spin_dwell_passes.setValue(3)
+        self.spin_dwell_passes.setToolTip("Multi-pass high-confidence real-time dwell passes per detected signal")
+        self.spin_dwell_passes.valueChanged.connect(lambda _: self._save_ui_settings())
+        c_hbox.addWidget(self.spin_dwell_passes)
 
         c_hbox.addWidget(QLabel("LNA:", self.custom_frame))
         self.spin_lna = QSpinBox(self.custom_frame)
@@ -573,11 +583,11 @@ class SmartScannerMainWindow(QMainWindow):
         self.spin_vga.valueChanged.connect(lambda _: self._save_ui_settings())
         c_hbox.addWidget(self.spin_vga)
 
-        self.chk_amp = QCheckBox("+14dB AMP", self.custom_frame)
+        self.chk_amp = QCheckBox("+14dB", self.custom_frame)
         self.chk_amp.toggled.connect(lambda _: self._save_ui_settings())
         c_hbox.addWidget(self.chk_amp)
 
-        self.chk_legal_only = QCheckBox("Legal Only", self.custom_frame)
+        self.chk_legal_only = QCheckBox("Legal", self.custom_frame)
         self.chk_legal_only.setChecked(True)
         self.chk_legal_only.toggled.connect(lambda _: self._save_ui_settings())
         c_hbox.addWidget(self.chk_legal_only)
@@ -624,7 +634,21 @@ class SmartScannerMainWindow(QMainWindow):
         self.lbl_lock_banner.setWordWrap(False)
         top_strip.addWidget(self.lbl_lock_banner, 1)
 
-        self.btn_release_gqrx = QPushButton("■ Release Gqrx", panel)
+        self.btn_surf_prev = QPushButton("◀ Prev", panel)
+        self.btn_surf_prev.setToolTip("Surf to previous active channel in Gqrx")
+        self.btn_surf_prev.setFixedWidth(62)
+        self.btn_surf_prev.clicked.connect(lambda: self._surf_gqrx_channel(-1))
+        self.btn_surf_prev.setVisible(False)
+        top_strip.addWidget(self.btn_surf_prev)
+
+        self.btn_surf_next = QPushButton("Next ▶", panel)
+        self.btn_surf_next.setToolTip("Surf to next active channel in Gqrx")
+        self.btn_surf_next.setFixedWidth(62)
+        self.btn_surf_next.clicked.connect(lambda: self._surf_gqrx_channel(+1))
+        self.btn_surf_next.setVisible(False)
+        top_strip.addWidget(self.btn_surf_next)
+
+        self.btn_release_gqrx = QPushButton("■ Release", panel)
         self.btn_release_gqrx.setObjectName("btnReleaseGqrx")
         self.btn_release_gqrx.setToolTip("Cleanly stops Gqrx DSP & releases HackRF One USB lock")
         self.btn_release_gqrx.clicked.connect(self._release_gqrx_manually)
@@ -714,6 +738,7 @@ class SmartScannerMainWindow(QMainWindow):
         self.table_signals.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table_signals.verticalHeader().setVisible(False)
         self.table_signals.itemSelectionChanged.connect(self._on_signal_row_selected)
+        self.table_signals.cellClicked.connect(self._on_signal_cell_clicked)
         self.table_signals.cellDoubleClicked.connect(self._on_signal_row_double_clicked)
         self.table_signals.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table_signals.customContextMenuRequested.connect(self._on_signals_context_menu)
@@ -898,15 +923,19 @@ class SmartScannerMainWindow(QMainWindow):
         self.btn_mode_custom.setChecked(m == "CUSTOM")
 
         if m == "QUICK":
-            self.spin_l3_frames.setValue(3)
-            self.lbl_active_mode_pill.setText("MODE: ⚡ QUICK SCAN (3-Frame 1MHz)")
+            self.spin_l3_frames.setValue(24)
+            if hasattr(self, "spin_dwell_passes"):
+                self.spin_dwell_passes.setValue(3)
+            self.lbl_active_mode_pill.setText("MODE: ⚡ FULL SPECTRUM (3-Pass Ultra-Zoom)")
             self.lbl_active_mode_pill.setObjectName("valuePillGreen")
         elif m == "DEEP":
-            self.spin_l3_frames.setValue(5)
-            self.lbl_active_mode_pill.setText("MODE: ◈ DEEP SCAN (5-Frame 1MHz)")
+            self.spin_l3_frames.setValue(36)
+            if hasattr(self, "spin_dwell_passes"):
+                self.spin_dwell_passes.setValue(5)
+            self.lbl_active_mode_pill.setText("MODE: ◈ DEEP ULTRA-ZOOM (5-Pass Dwell)")
             self.lbl_active_mode_pill.setObjectName("valuePillCyan")
         else:
-            self.lbl_active_mode_pill.setText("MODE: ⚙ CUSTOM SCAN (Manual RF)")
+            self.lbl_active_mode_pill.setText("MODE: ⚙ CUSTOM SCAN (Manual Passes & RF)")
             self.lbl_active_mode_pill.setObjectName("valuePillAmber")
 
         self.lbl_active_mode_pill.style().unpolish(self.lbl_active_mode_pill)
@@ -976,7 +1005,7 @@ class SmartScannerMainWindow(QMainWindow):
 
     def _build_current_scan_config(self) -> ScanConfig:
         sq_code = str(self.combo_squelch.currentData() or "OPEN")
-        return ScanConfig.from_mode(
+        cfg = ScanConfig.from_mode(
             mode=self._current_scan_mode,
             freq_min_mhz=self.spin_min_mhz.value(),
             freq_max_mhz=self.spin_max_mhz.value(),
@@ -990,6 +1019,9 @@ class SmartScannerMainWindow(QMainWindow):
             amp_enable=1 if self.chk_amp.isChecked() else 0,
             only_legal_demod=self.chk_legal_only.isChecked(),
         )
+        if hasattr(self, "spin_dwell_passes"):
+            cfg.dwell_passes = self.spin_dwell_passes.value()
+        return cfg
 
     # ------------------------------------------------------------------
     # Multi-Layer Scan Execution & Progress Telemetry
@@ -1083,6 +1115,9 @@ class SmartScannerMainWindow(QMainWindow):
                 hw_accel=pic.hardware_accelerated,
                 composite_rgb=u.latest_composite_rgb,
                 top_candidates=pic.top_candidates,
+                dwell_passes=int(vf.get("dwell_passes", 1)),
+                zoom_res_hz=float(vf.get("fine_fft_resolution_hz", 7.63)),
+                situational_notes=f"Pass {vf.get('dwell_passes', 1)} @ {vf.get('fine_fft_resolution_hz', 7.63):.1f}Hz",
             )
 
     def _on_scan_finished(
@@ -1229,20 +1264,39 @@ class SmartScannerMainWindow(QMainWindow):
             is_tv = (p.profile_category == "Broadcast_TV") or (tool in ("atsc_tv_rx", "w_scan_cpp"))
             is_adsb = (tool == "readsb") or (1_088_000_000 <= p.frequency_hz <= 1_092_000_000)
 
-            # Col 0: Exact Frequency (numerically ordered with service icon)
-            if is_tv:
+            # Col 0: Exact Frequency (1-click clickable Gqrx tuning link)
+            is_active_row = (
+                self._active_gqrx_freq_hz is not None
+                and abs(p.frequency_hz - self._active_gqrx_freq_hz) <= 8000
+            )
+            if is_active_row:
+                f_prefix = "🔊 "
+                f_suffix = " LIVE"
+            elif is_tv:
                 f_prefix = "📺 "
+                f_suffix = ""
             elif is_adsb:
                 f_prefix = "✈️ "
+                f_suffix = ""
             elif is_vbc:
                 f_prefix = "📻 "
+                f_suffix = ""
             elif is_any_v:
                 f_prefix = "🗣️ "
+                f_suffix = ""
             else:
-                f_prefix = ""
-            f_item = QTableWidgetItem(f"{f_prefix}{p.frequency_mhz:8.4f} MHz")
+                f_prefix = "🔗 "
+                f_suffix = ""
+            f_item = QTableWidgetItem(f"{f_prefix}{p.frequency_mhz:8.4f} MHz{f_suffix}")
             f_item.setFont(QFont("Monospace", 10, QFont.Weight.Bold))
-            if is_tv:
+            f_item.setToolTip(
+                f"1-Click Gqrx Tuning Link: Tap/click here to tune {p.frequency_mhz:.4f} MHz live in Gqrx!\n"
+                f"{getattr(p, 'situational_notes', '')}"
+            )
+            if is_active_row:
+                f_item.setForeground(QColor("#00ffaa"))
+                f_item.setBackground(QColor("#052e16"))
+            elif is_tv:
                 f_item.setForeground(QColor("#c4b5fd"))  # Lavender/Purple for Broadcast TV
             elif is_adsb:
                 f_item.setForeground(QColor("#fbbf24"))  # Amber for 1090 MHz ADS-B
@@ -1313,15 +1367,19 @@ class SmartScannerMainWindow(QMainWindow):
             cat_item.setForeground(QColor("#10b981" if is_vbc else cat_colors.get(p.profile_category, "#93c5fd")))
             self.table_signals.setItem(row, 5, cat_item)
 
-            # Col 6: Hailo-8 AI Confidence & Frame Count
+            # Col 6: Hailo-8 AI Confidence, Dwell Passes & Frame Count
             npu = "⚡" if p.hailo_accelerated else ""
+            dw_n = getattr(p, "dwell_passes", 1)
+            dw_str = f" • {dw_n}p" if dw_n > 1 else ""
             ai_item = QTableWidgetItem(
-                f"{npu}{p.pictogram_label} ({int(p.pictogram_confidence * 100)}% • {p.frames_evaluated}f)"
+                f"{npu}{p.pictogram_label} ({int(p.pictogram_confidence * 100)}% • {p.frames_evaluated}f{dw_str})"
             )
+            ai_item.setToolTip(getattr(p, "situational_notes", ""))
             self.table_signals.setItem(row, 6, ai_item)
 
-            # Col 7: Occupied Bandwidth + Calibrated HackRF Gains
-            g_str = f"{p.bandwidth_hz / 1000.0:.0f}k • IF:{p.lna_gain} BB:{p.vga_gain}"
+            # Col 7: Occupied Bandwidth + Resolution + Calibrated HackRF Gains
+            z_res = getattr(p, "zoom_resolution_hz", 7.63)
+            g_str = f"{p.bandwidth_hz / 1000.0:.0f}k @{z_res:.0f}Hz • IF:{p.lna_gain} BB:{p.vga_gain}"
             self.table_signals.setItem(row, 7, QTableWidgetItem(g_str))
 
             # Col 8: Calibrated Gqrx Pandapter/Waterfall Floor & Ceiling
@@ -1406,11 +1464,66 @@ class SmartScannerMainWindow(QMainWindow):
                 hw_accel=p.hailo_accelerated,
                 thumbnail_path=p.thumbnail_path,
                 top_candidates=[{"class": p.pictogram_neural_class, "score": p.pictogram_confidence}],
+                dwell_passes=getattr(p, "dwell_passes", 1),
+                zoom_res_hz=getattr(p, "zoom_resolution_hz", 7.63),
+                situational_notes=getattr(p, "situational_notes", ""),
             )
+
+    def _on_signal_cell_clicked(self, row: int, col: int) -> None:
+        if 0 <= row < len(self.filtered_profiles):
+            # 1-click tuning when Column 0 (Frequency Link) is clicked!
+            if col == 0 and self._scan_unlocked and not self.pipeline.is_scanning() and not self._tuning_busy:
+                self.handle_signal_demod_action(self.filtered_profiles[row])
 
     def _on_signal_row_double_clicked(self, row: int, _col: int) -> None:
         if 0 <= row < len(self.filtered_profiles):
             self.handle_signal_demod_action(self.filtered_profiles[row])
+
+    def _surf_gqrx_channel(self, delta: int) -> None:
+        if not self.filtered_profiles or self.pipeline.is_scanning() or self._tuning_busy:
+            return
+        curr_idx = -1
+        if self._active_gqrx_freq_hz is not None:
+            for idx, p in enumerate(self.filtered_profiles):
+                if abs(p.frequency_hz - self._active_gqrx_freq_hz) <= 8000:
+                    curr_idx = idx
+                    break
+        if curr_idx < 0:
+            curr_idx = self.table_signals.currentRow()
+        if curr_idx < 0:
+            next_idx = 0 if delta > 0 else len(self.filtered_profiles) - 1
+        else:
+            next_idx = (curr_idx + delta) % len(self.filtered_profiles)
+        self.table_signals.selectRow(next_idx)
+        self._on_signal_row_selected()
+        target_prof = self.filtered_profiles[next_idx]
+        self.handle_signal_demod_action(target_prof)
+
+    def _update_signals_table_active_badges(self) -> None:
+        for row, p in enumerate(self.filtered_profiles):
+            is_active = (
+                self._active_gqrx_freq_hz is not None
+                and abs(p.frequency_hz - self._active_gqrx_freq_hz) <= 8000
+            )
+            item = self.table_signals.item(row, 0)
+            if item is None:
+                continue
+            is_vbc = getattr(p, "is_voice_broadcast", False)
+            is_any_v = getattr(p, "is_any_voice", False)
+            tool = getattr(p, "demod_tool", "gqrx")
+            is_tv = (p.profile_category == "Broadcast_TV") or (tool in ("atsc_tv_rx", "w_scan_cpp"))
+            is_adsb = (tool == "readsb") or (1_088_000_000 <= p.frequency_hz <= 1_092_000_000)
+
+            if is_active:
+                item.setText(f"🔊 {p.frequency_mhz:8.4f} MHz LIVE")
+                item.setForeground(QColor("#00ffaa"))
+                item.setBackground(QColor("#052e16"))
+            else:
+                pfx = "📺 " if is_tv else ("✈️ " if is_adsb else ("📻 " if is_vbc else ("🗣️ " if is_any_v else "🔗 ")))
+                item.setText(f"{pfx}{p.frequency_mhz:8.4f} MHz")
+                item.setBackground(QColor(0, 0, 0, 0))
+                col_hex = "#c4b5fd" if is_tv else ("#fbbf24" if is_adsb else ("#10b981" if is_vbc else ("#38bdf8" if is_any_v else "#00f0ff")))
+                item.setForeground(QColor(col_hex))
 
     def _on_signals_context_menu(self, pos) -> None:
         row = self.table_signals.rowAt(pos.y())
@@ -1800,7 +1913,12 @@ class SmartScannerMainWindow(QMainWindow):
             accent_hex="#10b981",
             pulsing=False,
         )
+        self._active_gqrx_freq_hz = int(res.get("frequency_hz", 0))
         self.btn_release_gqrx.setVisible(True)
+        if hasattr(self, "btn_surf_prev"):
+            self.btn_surf_prev.setVisible(True)
+            self.btn_surf_next.setVisible(True)
+        self._update_signals_table_active_badges()
         self._poll_hardware_and_gqrx()
 
     def _release_gqrx_manually(self) -> None:
@@ -1811,8 +1929,13 @@ class SmartScannerMainWindow(QMainWindow):
             pass
         self.arbiter.stop_aux_receivers()
         self.arbiter.stop_gqrx_cleanly()
+        self._active_gqrx_freq_hz = None
         self.btn_release_gqrx.setVisible(False)
-        self.btn_release_gqrx.setText("■ Release Gqrx")
+        self.btn_release_gqrx.setText("■ Release")
+        if hasattr(self, "btn_surf_prev"):
+            self.btn_surf_prev.setVisible(False)
+            self.btn_surf_next.setVisible(False)
+        self._update_signals_table_active_badges()
         self.dual_progress.set_progress(
             100.0,
             100.0,
@@ -2178,7 +2301,7 @@ class SmartScannerMainWindow(QMainWindow):
         try:
             self._ui_settings_path.parent.mkdir(parents=True, exist_ok=True)
             payload = {
-                "version": "3.0-picto-sight-h8",
+                "version": "3.1-picto-sight-h8",
                 "saved_at_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "scan_mode": self._current_scan_mode,
                 "preset_index": int(self.combo_preset.currentIndex()),
@@ -2189,6 +2312,7 @@ class SmartScannerMainWindow(QMainWindow):
                 "min_snr": int(self.slider_snr.value()),
                 "min_peak": int(self.slider_peak.value()),
                 "l3_frames": int(self.spin_l3_frames.value()),
+                "dwell_passes": int(self.spin_dwell_passes.value()) if hasattr(self, "spin_dwell_passes") else 3,
                 "lna_gain": int(self.spin_lna.value()),
                 "vga_gain": int(self.spin_vga.value()),
                 "amp_enable": bool(self.chk_amp.isChecked()),
@@ -2269,7 +2393,9 @@ class SmartScannerMainWindow(QMainWindow):
             if mode_val in ("QUICK", "DEEP", "CUSTOM"):
                 self._select_scan_mode(mode_val)
             if "l3_frames" in data:
-                self.spin_l3_frames.setValue(max(3, min(10, int(data["l3_frames"]))))
+                self.spin_l3_frames.setValue(max(3, min(96, int(data["l3_frames"]))))
+            if "dwell_passes" in data and hasattr(self, "spin_dwell_passes"):
+                self.spin_dwell_passes.setValue(max(1, min(12, int(data["dwell_passes"]))))
 
             filt_mode = str(data.get("signal_filter_mode", "ALL")).upper()
             if filt_mode in ("ALL", "VOICE_BROADCAST", "ALL_VOICE", "TV_DATA"):

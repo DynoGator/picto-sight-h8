@@ -1,21 +1,22 @@
-# Picto-Sight H8 (`picto-sight-h8`) — v3.0.0 *"Trixie-Ghost-Spectrum"*
+# Picto-Sight H8 (`picto-sight-h8`) — v3.1.0 *"Ultra-Zoom-Spectrum"*
 
-[![Version: 3.0.0](https://img.shields.io/badge/Version-3.0.0%20Trixie--Ghost--Spectrum-ff1744.svg)](CHANGELOG.md)
+[![Version: 3.1.0](https://img.shields.io/badge/Version-3.1.0%20Ultra--Zoom--Spectrum-ff1744.svg)](CHANGELOG.md)
 [![OS: Debian 13 Trixie](https://img.shields.io/badge/OS-Debian%2013%20Trixie%20%7C%20RPi%20OS%20ARM64-d70a53.svg)](docs/INSTALL_TRIXIE.md)
-[![NPU: Hailo-8 26 TOPS](https://img.shields.io/badge/NPU-Hailo--8%2026%20TOPS%20(97.4%25%20Acc)-00e676.svg)](#layer-3--1000-mhz-multi-frame-hailo-8-ai-pictogram-classification)
+[![NPU: Hailo-8 26 TOPS](https://img.shields.io/badge/NPU-Hailo--8%2026%20TOPS%20(100.0%25%20Acc)-00e676.svg)](#1-4-stage-multi-layer-zoom-refinement--10-class-hailo-8-npu-1000-accuracy)
+[![Resolution: 1024x DSP Zoom](https://img.shields.io/badge/Resolution-1024x%20DSP%20Zoom%20(7.63%20Hz%2Fbin)-7c4dff.svg)](#1-4-stage-multi-layer-zoom-refinement--10-class-hailo-8-npu-1000-accuracy)
 [![SDR: HackRF One](https://img.shields.io/badge/SDR-HackRF%20One%20(1--6000%20MHz)-ffb300.svg)](#2-strict-1-at-a-time-sdr-arbiter--non-root-usb-exorcism-coresdr_arbiterpy)
-[![Receiver: Gqrx 2.17+](https://img.shields.io/badge/Receiver-Gqrx%202.17%2B%20Auto--Provisioned-7c4dff.svg)](#3-native-gqrx-217-profile-synthesis--verified-live-tuning-coregqrx_controllerpy)
-[![Demod: ATSC TV | NTSC | ADS-B | Pager](https://img.shields.io/badge/Demod-ATSC%208VSB%20%7C%20NTSC%20%7C%20ADS--B%20%7C%20POCSAG%20%7C%20rtl--433-00b0ff.svg)](#4-multi-tool-video-radar--telemetry-demodulation-suite)
-[![Tests: 43/43 Passing](https://img.shields.io/badge/Tests-43%2F43%20Passing-brightgreen.svg)](#verification--automated-test-suite)
+[![Receiver: Gqrx 2.17+](https://img.shields.io/badge/Receiver-Gqrx%202.17%2B%20Clickable%20Links-00b0ff.svg)](#3-native-gqrx-217-profile-synthesis--verified-live-tuning-coregqrx_controllerpy)
+[![Demod: ATSC TV | NTSC | ADS-B | CTCSS](https://img.shields.io/badge/Demod-ATSC%208VSB%20%7C%20NTSC%20%7C%20ADS--B%20%7C%20CTCSS-00e5ff.svg)](#4-multi-tool-video-radar--telemetry-demodulation-suite)
+[![Tests: 45/45 Passing](https://img.shields.io/badge/Tests-45%2F45%20Passing-brightgreen.svg)](#verification--automated-test-suite)
 [![License: MIT](https://img.shields.io/badge/License-MIT-00e5ff.svg)](LICENSE)
 
 > *"Because manually typing 32-digit hex serials into Gqrx while `readsb` hot-wires your HackRF One in the dark and a 48 MHz crystal harmonic convinces you that you've found a numbers station is not 'signals intelligence'—it's a cry for help."*
 
-**Picto-Sight H8** is a production-ready, hardware-accelerated **AI Smart RF Scanner, 10-Class Spectrogram Pictogram Classifier (`97.4%` Hailo-8 PCIe NPU validation accuracy), Live Terrestrial ATSC 8VSB / Analog NTSC Television Receiver, Live 1090 MHz ADS-B Tactical Radar, POCSAG/APRS/IoT Telemetry Decoder, and Self-Healing Gqrx 2.17+ Controller** built for **Raspberry Pi 5** running **Raspberry Pi OS / Debian 13 (Trixie)**.
+**Picto-Sight H8** is a production-ready, hardware-accelerated **AI Smart RF Scanner, 1,024× Ultra-Zoom DSP Spectrum Analyzer (7.63 Hz/bin Welch PSD, 244 Hz/bin micro-waterfall), 10-Class Spectrogram Pictogram Classifier (`100.0%` Hailo-8 PCIe NPU validation accuracy), Live Terrestrial ATSC 8VSB / Analog NTSC Television Receiver, Live 1090 MHz ADS-B Tactical Radar, POCSAG/APRS/IoT Telemetry Decoder, and 1-Click Interactive Gqrx 2.17+ Live Audio Controller** built for **Raspberry Pi 5** running **Raspberry Pi OS / Debian 13 (Trixie)**.
 
-Engineered from the bare metal up for both **5-inch `800×480` DSI touch cyberdecks** and **1080p+ 4-pane HDMI SIGINT workstations**, Picto-Sight H8 turns raw `1 MHz – 6000 MHz` electromagnetic chaos into an ordered, legally gated, 1-tap clickable cockpit—with zero USB contention, zero `crash=true` Gqrx popups, and zero patience for unmodulated clock spurs.
+Engineered from the bare metal up for both **5-inch `800×480` DSI touch cyberdecks** and **1080p+ 4-pane HDMI SIGINT workstations**, Picto-Sight H8 defaults to comprehensive multi-pass Full Spectrum sweeps (`1 MHz – 6000 MHz`, $\ge 2$ whole minutes of rigorous multi-pass dwell) and turns raw electromagnetic chaos into an ordered, legally gated, 1-tap clickable cockpit—with zero USB contention, zero `crash=true` Gqrx popups, and zero patience for unmodulated clock spurs.
 
-📚 **Documentation Suite**: [**Debian 13 Trixie Install Guide**](docs/INSTALL_TRIXIE.md) • [**Operator & Cyberdeck Field Manual**](docs/OPERATOR_GUIDE.md) • [**Changelog (`v3.0.0`)**](CHANGELOG.md)
+📚 **Documentation Suite**: [**Debian 13 Trixie Install Guide**](docs/INSTALL_TRIXIE.md) • [**Operator & Cyberdeck Field Manual**](docs/OPERATOR_GUIDE.md) • [**Changelog (`v3.1.0`)**](CHANGELOG.md)
 
 ---
 
@@ -51,15 +52,15 @@ curl -fsSL https://raw.githubusercontent.com/DynoGator/picto-sight-h8/main/insta
 ```
 
 ### Method 2 — Native Debian 13 (Trixie) `.deb` Package (`arm64`)
-Download `picto-sight-h8_3.0.0-1.trixie_arm64.deb` from [**GitHub Releases (`v3.0.0`)**](https://github.com/DynoGator/picto-sight-h8/releases/latest) (or build it locally via `./packaging/build_deb.sh`) and install with `apt`:
+Download `picto-sight-h8_3.1.0-1.trixie_arm64.deb` from [**GitHub Releases (`v3.1.0`)**](https://github.com/DynoGator/picto-sight-h8/releases/latest) (or build it locally via `./packaging/build_deb.sh`) and install with `apt`:
 
 ```bash
 sudo apt update
-sudo apt install -y ./picto-sight-h8_3.0.0-1.trixie_arm64.deb
+sudo apt install -y ./picto-sight-h8_3.1.0-1.trixie_arm64.deb
 picto-sight --doctor
 ```
 
-### Method 3 — Git Clone + Full Installer + Automated 43-Test Verification
+### Method 3 — Git Clone + Full Installer + Automated 45-Test Verification
 ```bash
 git clone https://github.com/DynoGator/picto-sight-h8.git
 cd picto-sight-h8
@@ -104,29 +105,45 @@ flowchart TD
 
 ## Under the Hood — Engineering Highlights
 
-### 1. 4-Stage Multi-Layer Zoom-Refinement & 10-Class Hailo-8 NPU (`97.4%` Accuracy)
-- **Stage 1 — Layer 1 Wideband Overview (`core/hackrf_engine.py`)**: Sweeps `1 MHz – 6000 MHz` via `SIGINT`-safe `hackrf_sweep`, computes a 20th-percentile noise floor that refuses to be gaslit by adjacent FM blowtorches, enforces **Min SNR** & **Min Peak** thresholds, and gates restricted cellular bands per ECPA/ITU rules.
-- **Stage 2 — Layer 2 `4.0 MHz` Fine-Zoom & Raster Snapping (`core/bandplans.py`)**: Re-sweeps localized `4.0 MHz` neighborhoods at `100 kHz` resolution and snaps carriers onto exact physical channel centers (`200 kHz` odd-tenth North American FM, `25 kHz` Airband/Marine/NOAA, `12.5 kHz` VHF/UHF Public Safety & AAR Rail, non-uniform 40-channel Citizens Band including RC `26.995/27.045/27.095/27.145/27.195 MHz` holes, and exact `6 MHz` ATSC TV channel centers).
-- **Stage 3 — Layer 3 `1.000 MHz` Multi-Frame Hailo-8 Inference (`core/hailo_pictogram.py`, `core/pictogram_engine.py`)**:
-  - Captures `2.0 MSPS` quadrature IQ (`-150 kHz` LO offset below `10 MHz` to dodge MAX2837 zero-IF DC spikes; `lower_edge + 350 kHz` framing on `6 MHz` ATSC channels so the `+309.441 kHz` 8VSB pilot spike lands dead-center in the `1.000 MHz` spectrogram) and slices **3 to 5 independent STFT frames**.
-  - Feeds `224×224×3` Viridis spectrogram ROIs through `/dev/hailo0` (**Hailo-8 26 TOPS PCIe**) fused with a **16-dimensional physical RF feature vector** (`1016-D` BatchNorm + MLP head in `models/hailo_pictogram_head_weights.npz`), achieving **`97.4%` held-out validation accuracy** across 10 classes:
+### 1. 4-Stage Multi-Layer Zoom-Refinement & 10-Class Hailo-8 NPU (`100.0%` Accuracy)
+- **Default Full Spectrum Sweep Engine (`1 – 6000 MHz`, $\ge 2$ Minutes)**:
+  - Picto-Sight H8 defaults to comprehensive multi-pass sweeps across the entire `1 MHz – 6000 MHz` range partitioned into 6 RF subbands (`1–30 MHz` HF, `30–300 MHz` VHF, `300–1000 MHz` UHF Low, `1000–2000 MHz` L-Band, `2000–4000 MHz` S-Band, and `4000–6000 MHz` C-Band).
+  - Fast C/NumPy streaming CSV parser computes mean + max-hold spectral statistics across multi-pass runs (`3` passes in QUICK mode, `5` passes in DEEP mode).
+  - High-confidence multi-pass dwell budget ensures full spectrum sweeps take $\ge 2$ whole minutes (`~2.5–5 min` QUICK, `~5–9 min` DEEP) of genuine physical RF integration rather than shallow sampling.
+- **1,024× Ultra-Zoom DSP Spectral Architecture (`core/hackrf_engine.py`)**:
+  - Computes `262,144`-point Welch PSD on 2.0 MSPS quadrature IQ, delivering **`7.629 Hz/bin`** resolution (1,024× finer than conventional 7.8 kHz FFTs).
+  - **Narrowband Ultra-Zoom**: 64× FIR decimation down to `31.25 kHz` bandwidth at **`244.14 Hz/bin`** resolution for razor-sharp micro-waterfall carrier examination and sub-10 Hz offset locking.
+  - **Wideband MPX Zoom**: 8× FIR decimation down to `125/250 kHz` bandwidth at **`976.6 Hz/bin`** resolution for FM stereo multiplex baseband, 19.000 kHz pilot tone detection, and RDS subcarriers.
+  - **Sub-Audible CTCSS PL Detector**: Correlates against all 50 standard TIA-603 tone frequencies (`67.0 Hz` to `254.1 Hz`) for precise public safety, repeater, and commercial tone identification.
+- **Precision Channel Raster Snapping (`core/bandplans.py`)**:
+  - Corrected VHF High FCC Part 90 grid to `2,500 Hz` common raster (`154.845`, `155.880`, `154.400`, `154.310`, `152.480 MHz` snap with `0 Hz` error).
+  - Prioritizes AAR Railroad (`160.2075–161.5725 MHz`, `15 kHz`/`7.5 kHz`) over Marine VHF (`25 kHz`).
+  - Snaps AM Mediumwave (`10 kHz`), Citizens Band 40 channels, Airband (`25/8.33 kHz`), and ATSC 6 MHz TV carriers.
+- **Dual-Scale `1024-D` Hailo-8 NPU Inference (`100.0%` Validation Accuracy)**:
+  - Generates Dual-Scale 4-tile composite RGB strips combining Macro RF spectrograms with Ultra-Zoom decimated micro-waterfalls.
+  - Feeds multi-scale frames through `/dev/hailo0` (**Hailo-8 26 TOPS PCIe**) fused with a **24-dimensional physical RF feature vector** (`models/hailo_pictogram_head_weights.npz`), achieving **`100.00%` held-out validation accuracy** across all 10 classes:
     `wfm_stereo` • `nfm_voice` • `am_voice` • `atsc_tv` • `fsk_pager` • `ism_telemetry` • `adsb_pulse` • `glyph` • `geometric` • `noise_reject` *(with automatic `96.0%`-accurate CPU MLP fallback when running without an NPU)*.
-  - Rejects unmodulated internal clock spurs (`10 / 20 / 25 / 32 / 40 / 48 / 50 / 80 / 100 / 125 MHz` harmonics) so your scanner stops reporting your own SBC's crystal oscillator as first contact.
-- **Stage 4 — Atomic Persistence (`core/profile_organizer.py`)**: Sorts verified carriers in **strict numerical ascending order**, renders multi-frame spectrogram strips, atomically writes JSON + two-table Gqrx `bookmarks.csv` (`fsync` + `os.replace`), and unlocks the signal table.
+  - Slices up to 24–36 frames per signal for maximum classification confidence and RF situational awareness.
+- **Stage 4 — Situational Awareness & Atomic Persistence (`core/profile_organizer.py`)**:
+  - Enriches saved profiles with dwell passes, dwell time, zoom resolution, detected CTCSS tone, stereo pilot status, and situational notes.
+  - Sorts verified carriers in **strict numerical ascending order** and atomically writes JSON + two-table Gqrx `bookmarks.csv` (`fsync` + `os.replace`).
 
 ### 2. Strict 1-at-a-Time SDR Arbiter & Non-Root USB Exorcism (`core/sdr_arbiter.py`)
 - **Cross-Process `fcntl.flock` Mutex (`/tmp/smart_rf_sdr.lock`)**: Coordinates exclusive HackRF One handoffs across `SCANNER`, `GQRX`, `TV_DEMOD`, `ADSB_RADAR`, and `DATA_DECODE`. Starting any receiver cleanly parks the previous owner first—zero `LIBUSB_ERROR_BUSY` food fights.
 - **Zero-USB-Traffic `sysfs` Polling**: Reads `/sys/bus/usb/devices/*/idVendor=1d50` directly from the kernel VFS instead of hammering `hackrf_info` while IQ samples are mid-flight.
 - **Passwordless `USBDEVFS_RESET` (`0x5514`)**: Whenever the HackRF LPC43xx SGPIO state machine decides to stare into the abyss after rapid process switches, Picto-Sight H8 fires a non-root kernel USB port reset on `/dev/bus/usb/<BUS>/<DEV>` automatically—or on command via **`⟳ Reset SDR`**.
 
-### 3. Native Gqrx 2.17+ Profile Synthesis & Verified Live Tuning (`core/gqrx_controller.py`)
+### 3. Native Gqrx 2.17+ Interactive Controller & Clickable Links (`core/gqrx_controller.py`)
+- **Clickable Column 0 Frequency Links (`🔗 ... MHz` / `🔊 ... MHz LIVE`)**:
+  - Clicking any frequency in the Signals Table instantly launches or retunes Gqrx, highlights the row with an active emerald badge, and streams live PipeWire audio.
+  - **1-Tap Channel Surfing Buttons (`◀ Prev` / `Next ▶`)**: Easily cycle between discovered active voice signals without lifting a finger off the touchscreen.
+- **Sub-10 Hz Verified Tuning**: Resets LNB LO offset, verifies frequency readback over TCP `127.0.0.1:7356`, and verifies real IQ DSP output (`l STRENGTH > -120 dBFS`).
 - **32-Hex Serial Padding Stripper**: Translates `0000000000000000458863c82f7c5f4f` $\rightarrow$ `hackrf=7c5f4f` so `gr-osmosdr`'s suffix matcher binds the exact board 100% of the time.
 - **Automatic `crash=false` & `recentconfig.cfg` Sanitization**: Wipes stale `crash=true` landmines so Gqrx never halts startup with modal recovery dialogs on a 5-inch touchscreen.
 - **3-Tier Adaptive Sample Rate & Decimation**:
   - `TV_WIDE` (`8.0 MSPS`, `decim=1`) for `6 MHz` broadcast television pedestals.
   - `WIDE` (`2.4 MSPS`, `decim=1`) for `200 kHz` WFM Stereo multiplex & RDS.
   - `NARROW` (`2.0 MSPS`, `decim=2` $\rightarrow$ `1.0 MHz` span, `8192`-pt FFT) for razor-sharp `6–25 kHz` NFM, AM, CB, Rail, and Aviation voice.
-- **Live TCP `127.0.0.1:7356` Verification**: Retunes running Gqrx sessions in `< 80 ms` and verifies real IQ DSP output (`l STRENGTH > -120 dBFS`) with PipeWire audio normalized to `0 dB`.
 
 ### 4. Multi-Tool Video, Radar & Telemetry Demodulation Suite
 - **Broadcast Television (`core/tv_demodulator.py`, `ui/tv_dialog.py`)**:
@@ -236,21 +253,21 @@ picto-sight-h8/
 │   ├── build_deb.sh                         # Native Debian 13 (Trixie) .deb package builder
 │   └── udev/53-hackrf-picto-sight.rules     # Non-root HackRF One USB & USBDEVFS_RESET udev rules
 ├── models/
-│   └── hailo_pictogram_head_weights.npz     # 10-class Hailo-8 + 16-D RF MLP weights (97.4% val accuracy)
+│   └── hailo_pictogram_head_weights.npz     # 10-class Hailo-8 + 24-D RF MLP weights (100.0% val accuracy)
 ├── docs/
 │   ├── INSTALL_TRIXIE.md                    # Step-by-step Debian 13 Trixie & Raspberry Pi 5 PCIe install guide
 │   ├── OPERATOR_GUIDE.md                    # Complete DSI & HDMI Studio operator manual
 │   └── images/                              # Verified hardware & GUI screenshots
 ├── icons/                                   # Custom SVG vector application & scan-mode icons
 ├── desktop/                                 # Parameterized XDG .desktop & boot autostart templates
-└── tests/                                   # 43 automated unit, DSP, GUI geometry & live hardware tests
+└── tests/                                   # 45 automated unit, DSP, GUI geometry & live hardware tests
 ```
 
 ---
 
 ## Verification & Automated Test Suite
 
-Run the full **43-test** hardware, DSP, Hailo-8 NPU, Broadcast TV, Gqrx, `.deb` portability, and `800×480` DSI geometry verification suite anytime:
+Run the full **45-test** hardware, DSP, Hailo-8 NPU, Broadcast TV, Gqrx, `.deb` portability, and `800×480` DSI geometry verification suite anytime:
 
 ```bash
 QT_QPA_PLATFORM=offscreen ./.venv/bin/python -m pytest -v

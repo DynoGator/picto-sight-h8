@@ -444,8 +444,8 @@ class TestFullSystemAudit(unittest.TestCase):
         from core import get_runtime_data_dir
         from scripts.doctor_check import provision_gqrx_out_of_box, run_doctor_check
 
-        self.assertEqual(core.__version__, "3.0.0")
-        self.assertEqual(core.__release_codename__, "Trixie-Ghost-Spectrum")
+        self.assertEqual(core.__version__, "3.1.0")
+        self.assertEqual(core.__release_codename__, "Ultra-Zoom-Spectrum")
 
         # 1. Verify PICTOSIGHT_DATA_DIR override & read-only /opt fallback portability
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -461,7 +461,7 @@ class TestFullSystemAudit(unittest.TestCase):
 
         # 2. Verify System Doctor passes all required stack checks
         report = run_doctor_check()
-        self.assertEqual(report["version"], "3.0.0")
+        self.assertEqual(report["version"], "3.1.0")
         self.assertTrue(report["ready"])
         self.assertEqual(report["required_failures"], 0)
 
@@ -470,6 +470,235 @@ class TestFullSystemAudit(unittest.TestCase):
         self.assertTrue(prov["ok"])
         default_conf_txt = Path(prov["default_conf"]).read_text(encoding="utf-8", errors="ignore")
         self.assertNotIn("crash=true", default_conf_txt.lower())
+
+    def test_09_ultra_zoom_dsp_precision_raster_and_dwell(self) -> None:
+        from core.bandplans import refine_precision_channel_frequency
+        from core.hackrf_engine import HackRFScannerEngine, ScanConfig
+
+        # 1. Verify VHF High & AAR Railroad snap with 0 Hz error on FCC 2.5 kHz & 15 kHz grids
+        f_vhf_tests = [154_845_000, 155_880_000, 154_400_000, 154_310_000, 152_480_000]
+        for f in f_vhf_tests:
+            snapped, off = refine_precision_channel_frequency(f + 2.0, obw_hz=12_500.0, iq_mod_hint="NFM")
+            self.assertEqual(snapped, f, f"Expected {f} to snap with 0 Hz error, got {snapped}")
+            self.assertAlmostEqual(off, 2.0, delta=1.0)
+
+        # AAR Rail channel: 161.490 MHz (AAR 92)
+        f_rail = 161_490_000
+        snapped_r, _ = refine_precision_channel_frequency(f_rail + 1.5, obw_hz=12_000.0, iq_mod_hint="NFM")
+        self.assertEqual(snapped_r, f_rail)
+
+        # AM MW 1040 kHz (10 kHz grid)
+        snapped_am, _ = refine_precision_channel_frequency(1_040_003, obw_hz=10_000.0, iq_mod_hint="AM")
+        self.assertEqual(snapped_am, 1_040_000)
+
+        # 2. Test 1,024x Welch fine PSD (df <= 7.63 Hz/bin) + 244 Hz/bin Ultra-Zoom frame extraction
+        sample_rate = 2_000_000
+        n_samples = 262_144
+        t = np.arange(n_samples) / float(sample_rate)
+        # Carrier at +250 kHz LO offset + 19 kHz stereo pilot tone
+        iq_sig = np.exp(1j * 2 * np.pi * 250_000.0 * t).astype(np.complex64)
+        iq_sig += 0.35 * np.exp(1j * 2 * np.pi * 269_000.0 * t).astype(np.complex64)
+
+        # Synthetic 64x128 macro frames
+        macro_frames = [np.full((64, 128), -85.0, dtype=np.float32) for _ in range(3)]
+        metrics = HackRFScannerEngine._compute_iq_signal_metrics(
+            iq=iq_sig,
+            frames=macro_frames,
+            sample_rate=sample_rate,
+            lo_offset_hz=250_000,
+            nominal_center_hz=98_900_000.0,
+            target_zoom_frames=6,
+        )
+
+        self.assertLessEqual(metrics["fine_fft_resolution_hz"], 7.63)
+        self.assertAlmostEqual(metrics["precision_carrier_hz"], 98_900_000.0, delta=15.0)
+        self.assertTrue(metrics.get("stereo_pilot", False))
+        self.assertIn("zoom_frames", metrics)
+        self.assertGreater(len(metrics["zoom_frames"]), 0)
+        self.assertAlmostEqual(metrics["zoom_bin_hz"], 976.56, delta=1.0)
+
+        # Test Narrowband 31.25 kHz Ultra-Zoom (244.14 Hz/bin = 32x zoomed-in waterfall!)
+        t_nb = np.arange(131_072) / float(sample_rate)
+        iq_nb = (np.exp(1j * 2 * np.pi * 250_000.0 * t_nb) + 0.1 * (np.random.randn(len(t_nb)) + 1j * np.random.randn(len(t_nb)))).astype(np.complex64)
+        nb_macro = [np.full((64, 128), -85.0, dtype=np.float32) for _ in range(3)]
+        metrics_nb = HackRFScannerEngine._compute_iq_signal_metrics(
+            iq=iq_nb,
+            frames=nb_macro,
+            sample_rate=sample_rate,
+            lo_offset_hz=250_000,
+            nominal_center_hz=155_880_000.0,
+            target_zoom_frames=6,
+        )
+        self.assertLessEqual(metrics_nb["zoom_bin_hz"], 245.0)
+        self.assertEqual(metrics_nb["zoom_span_hz"], 31_250.0)
+
+        # 3. Test Dual-Scale multi-pass dwell score fusion
+        mgr = AIPictogramClassifierManager()
+        rng = np.random.default_rng(999)
+        synth_macro, m_ref = _synth_3_frames("wfm_stereo", rng)
+        res_pass1 = mgr.analyze_spectrogram_frames(
+            98_900_000.0,
+            synth_macro,
+            iq_metrics={
+                "ref_floor_dbfs": m_ref,
+                "measured_obw_hz": 180_000.0,
+                "zoom_frames": metrics["zoom_frames"],
+                "zoom_span_hz": metrics["zoom_span_hz"],
+                "fine_fft_resolution_hz": metrics["fine_fft_resolution_hz"],
+            },
+            dwell_passes=1,
+        )
+        self.assertGreater(res_pass1.zoom_frames_evaluated, 0)
+        self.assertIn("wfm_stereo", res_pass1.accumulated_scores)
+
+        # Pass 2 with prior accumulated scores
+        res_pass2 = mgr.analyze_spectrogram_frames(
+            98_900_000.0,
+            synth_macro,
+            iq_metrics={
+                "ref_floor_dbfs": m_ref,
+                "measured_obw_hz": 180_000.0,
+                "zoom_frames": metrics["zoom_frames"],
+                "zoom_span_hz": metrics["zoom_span_hz"],
+                "fine_fft_resolution_hz": metrics["fine_fft_resolution_hz"],
+            },
+            prior_class_scores=res_pass1.accumulated_scores,
+            dwell_passes=2,
+        )
+        self.assertGreaterEqual(res_pass2.confidence, res_pass1.confidence)
+
+    def test_10_gui_full_spectrum_and_clickable_links(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings_path = Path(tmpdir) / "ui_settings.json"
+            win = SmartScannerMainWindow()
+            win._ui_settings_path = settings_path
+
+            # 1. Preset 0 is Full Spectrum (1 - 6000 MHz)
+            lbl, lo, hi = win.BAND_PRESETS[0]
+            self.assertIn("Full Spectrum", lbl)
+            self.assertEqual(lo, 1)
+            self.assertEqual(hi, 6000)
+
+            # 2. Verify Default ScanConfig is 1 - 6000 MHz
+            cfg = win._build_current_scan_config()
+            self.assertEqual(cfg.freq_min_mhz, 1)
+            self.assertEqual(cfg.freq_max_mhz, 6000)
+
+            # 3. Populate mock signals and verify clickable Column 0 + Gqrx Surfing
+            prof1 = ClassifiedSignalProfile(
+                frequency_hz=104_500_000,
+                frequency_mhz=104.5,
+                raw_measured_hz=104_500_000.0,
+                carrier_offset_hz=0.0,
+                signal_name="104.5 MHz FM KRFX",
+                profile_category="Broadcast_Audio",
+                modulation="WFM (Stereo)",
+                rigctl_mode="WFM_ST",
+                passband_hz=180000,
+                filter_low_cut=-90000,
+                filter_high_cut=90000,
+                fm_maxdev=75000,
+                sql_level=-150.0,
+                bandwidth_hz=180000.0,
+                snr_db=25.0,
+                peak_dbm=-40.0,
+                noise_floor_dbm=-75.0,
+                iq_mod_hint="WFM",
+                duty_cycle=1.0,
+                frames_evaluated=24,
+                pictogram_category="BROADCAST_WFM",
+                pictogram_neural_class="wfm_stereo",
+                pictogram_label="WFM-Stereo",
+                pictogram_confidence=0.98,
+                hailo_accelerated=True,
+                lna_gain=24,
+                vga_gain=22,
+                amp_gain=0,
+                plot_min=-85.0,
+                plot_max=-30.0,
+                is_legal=True,
+                legal_notes="FM Broadcast",
+                locality_ref="Penrose",
+                timestamp_iso="2026-11-07T12:00:00Z",
+                is_voice_broadcast=True,
+                is_any_voice=True,
+                voice_label="[📻 BROADCAST]",
+                demod_tool="gqrx",
+                demod_cmd="gqrx",
+                atsc_channel=None,
+                dwell_passes=3,
+                zoom_resolution_hz=7.63,
+                situational_notes="3p/3.8s (48f @7.6Hz) | 19kHz-Stereo | 0Hz-Lock",
+            )
+            prof2 = ClassifiedSignalProfile(
+                frequency_hz=162_400_000,
+                frequency_mhz=162.4,
+                raw_measured_hz=162_400_000.0,
+                carrier_offset_hz=0.0,
+                signal_name="162.4 MHz NOAA Weather WX2",
+                profile_category="Emergency_Weather",
+                modulation="NFM (Voice)",
+                rigctl_mode="FM",
+                passband_hz=16000,
+                filter_low_cut=-8000,
+                filter_high_cut=8000,
+                fm_maxdev=5000,
+                sql_level=-150.0,
+                bandwidth_hz=16000.0,
+                snr_db=18.0,
+                peak_dbm=-52.0,
+                noise_floor_dbm=-80.0,
+                iq_mod_hint="NFM",
+                duty_cycle=1.0,
+                frames_evaluated=24,
+                pictogram_category="WEATHER_NFM",
+                pictogram_neural_class="nfm_voice",
+                pictogram_label="NOAA-WX",
+                pictogram_confidence=0.95,
+                hailo_accelerated=True,
+                lna_gain=32,
+                vga_gain=24,
+                amp_gain=0,
+                plot_min=-90.0,
+                plot_max=-40.0,
+                is_legal=True,
+                legal_notes="NOAA WX",
+                locality_ref="Penrose",
+                timestamp_iso="2026-11-07T12:00:00Z",
+                is_voice_broadcast=True,
+                is_any_voice=True,
+                voice_label="[📻 NOAA WX]",
+                demod_tool="gqrx",
+                demod_cmd="gqrx",
+                atsc_channel=None,
+                dwell_passes=2,
+                zoom_resolution_hz=7.63,
+                situational_notes="2p/2.5s (24f @7.6Hz) | 0Hz-Lock",
+            )
+            win.all_profiles = [prof1, prof2]
+            win._scan_unlocked = True
+            win._apply_viable_filter_and_populate()
+
+            self.assertEqual(win.table_signals.rowCount(), 2)
+            c0_item = win.table_signals.item(0, 0)
+            self.assertIn("104.5000 MHz", c0_item.text())
+
+            # 4. Verify 1-click Col 0 tuning handler
+            dispatched = {"called": False, "prof": None}
+            with patch.object(win, "handle_signal_demod_action", side_effect=lambda p: dispatched.update({"called": True, "prof": p})):
+                win._on_signal_cell_clicked(0, 0)
+                self.assertTrue(dispatched["called"])
+                self.assertEqual(dispatched["prof"].frequency_hz, 104_500_000)
+
+            # 5. Verify Gqrx Surfing next / prev
+            dispatched["called"] = False
+            with patch.object(win, "handle_signal_demod_action", side_effect=lambda p: dispatched.update({"called": True, "prof": p})):
+                win._active_gqrx_freq_hz = 104_500_000
+                win._surf_gqrx_channel(+1)
+                self.assertTrue(dispatched["called"])
+                self.assertEqual(dispatched["prof"].frequency_hz, 162_400_000)
+
+            win.close()
 
 
 if __name__ == "__main__":

@@ -341,8 +341,9 @@ class GqrxController:
             self.send_remote_command("U DSP 1")
             self.send_remote_command("U MUTE 0")
             self.send_remote_command("L AF 0")
-            ok_f, r_f = self.send_remote_command(f"F {freq_hz}")
+            self.send_remote_command("LNB_LO 0")
             ok_m, r_m = self.send_remote_command(f"M {rigctl_mode} {passband_hz}")
+            ok_f, r_f = self.send_remote_command(f"F {freq_hz}")
             self.send_remote_command(f"L RF_GAIN {amp_db}")
             self.send_remote_command(f"L IF_GAIN {lna_db}")
             self.send_remote_command(f"L BB_GAIN {vga_db}")
@@ -355,6 +356,18 @@ class GqrxController:
             time.sleep(0.35)
 
             _, rb_freq = self.send_remote_command("f")
+            rb_freq_str = rb_freq.strip()
+            rb_freq_int = int(rb_freq_str) if rb_freq_str.lstrip("-").isdigit() else 0
+            if abs(rb_freq_int - freq_hz) > 5:
+                # Re-lock exact Hz frequency after flowgraph mode settle
+                ok_f2, r_f2 = self.send_remote_command(f"F {freq_hz}")
+                ok_f = ok_f or ok_f2
+                r_f = f"{r_f}/{r_f2}"
+                time.sleep(0.08)
+                _, rb_freq = self.send_remote_command("f")
+                rb_freq_str = rb_freq.strip()
+                rb_freq_int = int(rb_freq_str) if rb_freq_str.lstrip("-").isdigit() else freq_hz
+
             _, rb_mode = self.send_remote_command("m")
             _, rb_dsp = self.send_remote_command("u DSP")
             _, rb_if = self.send_remote_command("l IF_GAIN")
@@ -379,10 +392,11 @@ class GqrxController:
                 strength_dbfs = -65.0 if rb_dsp.strip() == "1" else -200.0
 
             return {
-                "ok_freq": ok_f,
+                "ok_freq": ok_f and abs(rb_freq_int - freq_hz) <= 10,
                 "ok_mode": ok_m,
                 "stream_alive": stream_alive,
-                "verified_freq_hz": int(rb_freq.strip()) if rb_freq.strip().isdigit() else freq_hz,
+                "verified_freq_hz": rb_freq_int if rb_freq_int > 0 else freq_hz,
+                "freq_error_hz": abs(rb_freq_int - freq_hz) if rb_freq_int > 0 else 0,
                 "verified_mode": rb_mode.replace("\n", " ").strip(),
                 "verified_dsp": rb_dsp.strip() == "1",
                 "verified_if_gain": rb_if.strip(),

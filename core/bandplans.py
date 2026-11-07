@@ -318,6 +318,13 @@ def snap_to_channel_raster(freq_hz: float, region: str = "US") -> Tuple[int, flo
     """
     raw = float(freq_hz)
 
+    # 0. Commercial AM Mediumwave Broadcast (10 kHz Region 2 / 9 kHz Region 1/3)
+    if 525_000 <= raw <= 1_705_000:
+        step = 10_000.0 if region in ("US", "CA", "MX") else 9_000.0
+        snapped = int(round(raw / step) * step)
+        if abs(raw - snapped) <= 4_200:
+            return snapped, float(raw - snapped)
+
     # 1. NOAA All-Hazards Weather Radio exact 7-channel table
     if 162_385_000 <= raw <= 162_565_000:
         nearest = min(NOAA_WX_CHANNELS_HZ, key=lambda c: abs(c - raw))
@@ -348,14 +355,30 @@ def snap_to_channel_raster(freq_hz: float, region: str = "US") -> Tuple[int, flo
         if abs(raw - snapped) <= 9_000:
             return snapped, float(raw - snapped)
 
-    # 4. Marine VHF (25 kHz grid)
-    if 156_000_000 <= raw <= 162_025_000:
+    # 4a. AAR North American Railroad Band (160.215 - 161.565 MHz: 15 kHz standard & 7.5 kHz NXDN/narrowband)
+    # Evaluated BEFORE Marine VHF so 25 kHz Marine grid never steals AAR railroad channels!
+    if region in ("US", "CA", "MX") and 160_207_500 <= raw <= 161_572_500:
+        aar_base = 160_215_000.0
+        aar_15k = int(round(aar_base + round((raw - aar_base) / 15_000.0) * 15_000.0))
+        if abs(raw - aar_15k) <= 4_200:
+            return aar_15k, float(raw - aar_15k)
+        aar_7k5 = int(round(160_207_500.0 + round((raw - 160_207_500.0) / 7_500.0) * 7_500.0))
+        if abs(raw - aar_7k5) <= 2_800:
+            return aar_7k5, float(raw - aar_7k5)
+
+    # 4b. Marine VHF (25 kHz grid: 156.000-157.425 MHz & 161.600-162.025 MHz in US/CA; full 156-162.025 elsewhere)
+    is_marine_vhf = (
+        (156_000_000 <= raw <= 157_437_500) or (161_587_500 <= raw <= 162_037_500)
+        if region in ("US", "CA", "MX")
+        else (156_000_000 <= raw <= 162_037_500)
+    )
+    if is_marine_vhf:
         step = 25_000.0
         snapped = int(round(raw / step) * step)
         if abs(raw - snapped) <= 8_000:
             return snapped, float(raw - snapped)
 
-    # 4b. Citizens Band (CB) Radio 40-channel 10 kHz grid (26.965 - 27.405 MHz)
+    # 4c. Citizens Band (CB) Radio 40-channel 10 kHz grid (26.965 - 27.405 MHz)
     if 26_960_000 <= raw <= 27_410_000:
         cb_freqs = (
             26_965_000, 26_975_000, 26_985_000, 27_005_000, 27_015_000,
@@ -371,7 +394,7 @@ def snap_to_channel_raster(freq_hz: float, region: str = "US") -> Tuple[int, flo
         if abs(nearest_cb - raw) <= 4_500:
             return int(nearest_cb), float(raw - nearest_cb)
 
-    # 4c. FCC ATSC Digital Broadcast TV Channels (6.0 MHz channels: Ch 2-4, 5-6, 7-13, 14-36)
+    # 4d. FCC ATSC Digital Broadcast TV Channels (6.0 MHz channels: Ch 2-4, 5-6, 7-13, 14-36)
     # Snaps pilot carriers (lo + 309.441 kHz) and in-band multiplex peaks to official channel center (lo + 3.0 MHz)
     if region in ("US", "CA", "MX"):
         tv_lo: Optional[int] = None
@@ -387,23 +410,82 @@ def snap_to_channel_raster(freq_hz: float, region: str = "US") -> Tuple[int, flo
             tv_center = tv_lo + 3_000_000
             return int(tv_center), float(raw - tv_center)
 
-    # 5. FRS / GMRS & UHF/VHF Land Mobile (12.5 kHz grid; stops at 470 MHz before UHF TV Ch 14!)
-    if (462_550_000 <= raw <= 467_725_000) or (150_000_000 <= raw <= 174_000_000) or (450_000_000 <= raw < 470_000_000):
+    # 5a. FRS / GMRS UHF Channels (exact 12.5 kHz grid: 462.5500-462.7250 & 467.5500-467.7250 MHz)
+    if (462_543_750 <= raw <= 462_731_250) or (467_543_750 <= raw <= 467_731_250):
         step = 12_500.0
         snapped = int(round(raw / step) * step)
         if abs(raw - snapped) <= 4_500:
             return snapped, float(raw - snapped)
 
-    # 6. 2m / 70cm Amateur Radio (5 kHz standard tuning step)
-    if (144_000_000 <= raw <= 148_000_000) or (420_000_000 <= raw <= 450_000_000):
-        step = 5_000.0
+    # 5b. FCC Part 90 VHF High Public Safety / Land Mobile / Paging (150.000 - 174.000 MHz: 2.5 kHz / 7.5 kHz raster)
+    # Exact common raster for .845, .880, .400, .310, .160, .235, .340, .480 MHz channels!
+    if 150_000_000 <= raw <= 174_000_000:
+        step = 2_500.0
         snapped = int(round(raw / step) * step)
-        if abs(raw - snapped) <= 2_500:
+        return snapped, float(raw - snapped)
+
+    # 5c. FCC Part 90 UHF Land Mobile (450.000 - 470.000 MHz: 6.25 kHz / 12.5 kHz narrowband raster)
+    if 450_000_000 <= raw < 470_000_000:
+        step = 6_250.0
+        snapped = int(round(raw / step) * step)
+        if abs(raw - snapped) <= 3_125:
             return snapped, float(raw - snapped)
 
-    # Default: round cleanly to nearest 100 Hz
-    snapped = int(round(raw / 100.0) * 100)
+    # 6. 2m / 1.25m / 70cm Amateur Radio (5 kHz standard repeater/simplex step within crystal tolerance)
+    if (144_000_000 <= raw <= 148_000_000) or (222_000_000 <= raw <= 225_000_000) or (420_000_000 <= raw <= 450_000_000):
+        step = 5_000.0
+        snapped = int(round(raw / step) * step)
+        if abs(raw - snapped) <= 2_100:
+            return snapped, float(raw - snapped)
+
+    # Default VFO / ISM / Telemetry: preserve sub-10 Hz zoom measurement to nearest 10 Hz!
+    snapped = int(round(raw / 10.0) * 10)
     return snapped, float(raw - snapped)
+
+
+def refine_precision_channel_frequency(
+    measured_carrier_hz: float,
+    obw_hz: float = 16_000.0,
+    iq_mod_hint: str = "",
+    region: str = "US",
+) -> Tuple[int, float]:
+    """
+    Fuses a sub-10 Hz (7.63 Hz/bin) multi-pass precision IQ carrier lock with regulatory
+    channel rasters so clickable Gqrx links tune dead-center on both channelized broadcasters/repeaters
+    and arbitrary VFO / ISM / CW / Amateur frequencies.
+    """
+    raw = float(measured_carrier_hz)
+    snapped, off_hz = snap_to_channel_raster(raw, region=region)
+
+    # Broadcast FM, ATSC TV, NOAA WX, Aviation, Marine, CB, AAR Rail: always honor assigned channel center
+    if (
+        (87_800_000 <= raw <= 136_975_000)
+        or (162_385_000 <= raw <= 162_565_000)
+        or (160_207_500 <= raw <= 161_572_500)
+        or (26_960_000 <= raw <= 27_410_000)
+        or (525_000 <= raw <= 1_705_000)
+        or obw_hz >= 65_000.0
+    ):
+        return snapped, off_hz
+
+    # Narrowband CW / ISM / Telemetry / VFO: if off channel grid by > 1,800 Hz, lock to exact 10 Hz carrier!
+    if iq_mod_hint in ("CW", "DIGITAL_BURST") and (
+        (314_000_000 <= raw <= 316_000_000)
+        or (433_000_000 <= raw <= 434_900_000)
+        or (902_000_000 <= raw <= 928_000_000)
+        or raw < 144_000_000
+    ):
+        exact_10hz = int(round(raw / 10.0) * 10)
+        return exact_10hz, float(raw - exact_10hz)
+
+    # VHF/UHF Land Mobile: snap to FCC raster when within HackRF crystal PPM tolerance (~2.2 kHz),
+    # otherwise lock directly to 10 Hz precision carrier center.
+    max_ppm_tol_hz = max(1_600.0, raw * 8.0e-6)  # ~1.2 kHz @ 155 MHz, ~3.7 kHz @ 460 MHz
+    if abs(off_hz) <= max_ppm_tol_hz:
+        return snapped, off_hz
+
+    exact_10hz = int(round(raw / 10.0) * 10)
+    return exact_10hz, float(raw - exact_10hz)
 
 
 def compute_optimal_hackrf_gains(snr_db: float, peak_dbfs: float) -> Tuple[int, int, int]:
@@ -454,11 +536,15 @@ def evaluate_signal_demod_feasibility(
     demod_override: str = "AUTO (Band + AI)",
     squelch_mode: str = "OPEN",
     region: str = "US",
+    stereo_pilot: Optional[bool] = None,
+    ctcss_hz: float = 0.0,
+    freq_dev_hz: float = 0.0,
 ) -> Dict[str, Any]:
     """
     Evaluates whether a detected signal is legal & viable to demodulate, and translates
     its RF signature into exact Gqrx 2.17.6 receiver, filter, gain, squelch, and FFT display settings.
     """
+    _ = ctcss_hz
     band = find_band_definition(freq_hz, region)
 
     if band:
@@ -497,17 +583,31 @@ def evaluate_signal_demod_feasibility(
         is_legal = True
         legal_notes = "Open civilian reception"
 
-    # Refine AUTO demodulation using measured IQ modulation signature & occupied bandwidth
+    # Refine AUTO demodulation using measured IQ modulation signature, stereo pilot & occupied bandwidth
     if demod_override and demod_override != "AUTO (Band + AI)" and demod_override in GQRX_DEMOD_SPECS:
         demod = demod_override
         _, _, filt_low, filt_high, maxdev = GQRX_DEMOD_SPECS[demod]
     else:
-        if demod == "Narrow FM" and measured_bw_hz > 85_000 and not (87.8e6 <= freq_hz <= 108.1e6):
+        if demod == "WFM (stereo)" and stereo_pilot is False and snr_db < 14.5:
+            # Weak distant FM DX without 19 kHz pilot: drop to mono for 20 dB cleaner audio SNR
+            demod = "WFM (mono)"
+            _, _, filt_low, filt_high, maxdev = GQRX_DEMOD_SPECS[demod]
+        elif demod == "Narrow FM" and measured_bw_hz > 85_000 and not (87.8e6 <= freq_hz <= 108.1e6):
             demod = "WFM (mono)"
             _, _, filt_low, filt_high, maxdev = GQRX_DEMOD_SPECS[demod]
         elif demod == "Narrow FM" and iq_mod_hint == "CW" and measured_bw_hz < 1_500:
             demod = "CW-U"
             _, _, filt_low, filt_high, maxdev = GQRX_DEMOD_SPECS[demod]
+        elif demod == "Narrow FM":
+            # Carson's rule passband tailoring: 12.5 kHz narrowband LMR (+-5.5 kHz, dev 2.5 kHz)
+            # vs 25 kHz wideband NOAA/Marine/Amateur (+-8.0 kHz, dev 5.0 kHz)
+            is_25k_alloc = (162_385_000 <= freq_hz <= 162_565_000) or (156_000_000 <= freq_hz <= 157_425_000) or (144_000_000 <= freq_hz <= 148_000_000)
+            if not is_25k_alloc and measured_bw_hz <= 13_500 and (freq_dev_hz <= 3_200 or freq_dev_hz == 0.0):
+                filt_low, filt_high, maxdev = -5_500, 5_500, 2_500
+            elif is_25k_alloc or measured_bw_hz >= 18_000 or freq_dev_hz >= 3_800:
+                filt_low, filt_high, maxdev = -8_000, 8_000, 5_000
+        elif demod == "AM" and (108_000_000 <= freq_hz <= 137_000_000 or 26_960_000 <= freq_hz <= 27_410_000):
+            filt_low, filt_high = -4_800, 4_800
 
     rigctl_mode, passband_hz, spec_low, spec_high, spec_maxdev = GQRX_DEMOD_SPECS.get(
         demod, GQRX_DEMOD_SPECS["Narrow FM"]

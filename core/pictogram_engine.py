@@ -31,22 +31,27 @@ logger = logging.getLogger("smart_scanner.pictogram")
 @dataclass
 class PictogramAnalysisResult:
     category: str               # "PICTO_GLYPH", "PICTO_RASTER", "PICTO_GEOMETRIC", "PICTO_BURST_MATRIX", "PICTO_CARRIER_COMB", "BROADCAST_WFM", "BROADCAST_TV", "ISM_TELEMETRY", "AVIATION_ADSB", "WEATHER_SAT_TELEM", "APRS_PACKET", "PAGER_DATA", "AVIATION_AM", "WEATHER_NFM", "NARROWBAND_FM", "NOISE_REJECT"
-    raw_neural_class: str       # Direct Hailo-8 head output: glyph, raster, geometric, tone_matrix, carrier_comb, noise_reject
+    raw_neural_class: str       # Direct Hailo-8 head output
     label: str                  # Concise human+AI classification label
     confidence: float           # Aggregated neural confidence (0.0..1.0)
     hardware_accelerated: bool  # True when executed on /dev/hailo0 26 TOPS PCIe NPU
     latency_ms: float           # Total multi-frame inference time in ms
-    frames_evaluated: int       # Always >= 3 in Layer 3
+    frames_evaluated: int       # Total Macro + Ultra-Zoom frames classified
     num_rois_analyzed: int      # Total ROIs passed through Hailo-8
     is_noise_rejected: bool     # True if neural classifier + low duty cycle flags noise artifact
     top_candidates: List[Dict[str, Any]] = field(default_factory=list)
     per_frame_classes: List[str] = field(default_factory=list)
     visual_features: Dict[str, Any] = field(default_factory=dict)
-    composite_rgb: Optional[np.ndarray] = None  # Rendered HxWx3 RGB strip of the >=3 frames with ROI boxes
+    composite_rgb: Optional[np.ndarray] = None  # Rendered Dual-Scale HxWx3 RGB strip
+    zoom_frames_evaluated: int = 0
+    zoom_span_hz: float = 0.0
+    fine_resolution_hz: float = 7.629
+    accumulated_scores: Dict[str, List[float]] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d.pop("composite_rgb", None)
+        d.pop("accumulated_scores", None)
         return d
 
 
@@ -262,21 +267,111 @@ class AIPictogramClassifierManager:
         )
         return roi, (r0, r1, c0, c1)
 
+    def _build_zoom_frame_roi(
+        self,
+        z_frame: np.ndarray,
+        center_freq_hz: float,
+        zoom_span_hz: float,
+        frame_idx: int,
+    ) -> Tuple[Optional[Any], Tuple[int, int, int, int]]:
+        """
+        Builds a full-span Ultra-Zoom Micro Waterfall ROI (31.25 kHz @ 244.14 Hz/bin or
+        125/250 kHz @ 976.6/1,953 Hz/bin) where narrowband carrier spines, speech sidebands,
+        and FSK Mark/Space rails span 30-60 columns instead of 1.5 pixels!
+        """
+        rows, cols = z_frame.shape
+        floor_db = float(np.percentile(z_frame, 15))
+        peak_db = float(np.max(z_frame))
+        snr_2d = np.maximum(0.0, z_frame - floor_db)
+
+        col_means = np.mean(snr_2d, axis=0)
+        act = np.where(col_means >= max(3.5, (peak_db - floor_db) * 0.25))[0]
+        if len(act) >= 2:
+            c0 = int(act[0])
+            c1 = int(act[-1] + 1)
+        else:
+            mid_c = cols // 2
+            c0, c1 = max(0, mid_c - 8), min(cols, mid_c + 8)
+
+        row_pks = np.max(snr_2d[:, max(0, c0) : min(cols, c1)], axis=1)
+        act_r = np.where(row_pks >= max(3.5, (peak_db - floor_db) * 0.30))[0]
+        if len(act_r) >= 2:
+            r0, r1 = int(act_r[0]), int(act_r[-1] + 1)
+        else:
+            r0, r1 = 0, rows
+
+        contour_w = max(2, c1 - c0)
+        contour_h = max(2, r1 - r0)
+
+        # Preserve full 128-column zoomed frame so 31.25 kHz / 250 kHz physical width ratio stays exact
+        dyn_range = max(15.0, peak_db - floor_db + 3.5)
+        norm = np.clip((z_frame - floor_db) / dyn_range * 255.0, 0, 255).astype(np.uint8)
+        bgr_patch = cv2.applyColorMap(norm, cv2.COLORMAP_VIRIDIS)
+        rgb_224 = cv2.resize(bgr_patch, (224, 224), interpolation=cv2.INTER_LINEAR)
+
+        if self._roi_cls is None:
+            return None, (r0, r1, c0, c1)
+
+        bin_hz = zoom_span_hz / float(cols)
+        roi = self._roi_cls(
+            roi_id=f"z{frame_idx}_{uuid.uuid4().hex[:6]}",
+            row_min=r0,
+            row_max=r1,
+            col_min=c0,
+            col_max=c1,
+            width_bins=contour_w,
+            height_rows=contour_h,
+            area=contour_w * contour_h,
+            center_freq_hz=float(center_freq_hz),
+            bandwidth_hz=float(contour_w * bin_hz),
+            duration_s=0.10 * (contour_h / max(1.0, float(rows))),
+            snr_db=float(np.max(snr_2d[r0:r1, c0:c1])),
+            peak_dbm=float(peak_db),
+            patch=z_frame,
+            normalized_rgb=rgb_224,
+        )
+        return roi, (r0, r1, c0, c1)
+
     @staticmethod
     def render_frames_composite_rgb(
         frames: List[np.ndarray],
         boxes: List[Tuple[int, int, int, int]],
         center_freq_mhz: float,
         label: str,
+        zoom_frames: Optional[List[np.ndarray]] = None,
+        zoom_boxes: Optional[List[Tuple[int, int, int, int]]] = None,
+        zoom_span_hz: float = 31_250.0,
+        dwell_passes: int = 1,
     ) -> np.ndarray:
         """
-        Renders all >=3 1MHz spectrogram frames side-by-side into a crisp RGB strip
-        with bounding boxes, center carrier reticle, and frame numbers for UI display & disk persistence.
+        Renders a crisp Dual-Scale RGB Spectrogram Strip (1.000 MHz Macro context + 31.25/250 kHz
+        Ultra-Zoom carrier detail @ 244 Hz/bin) bounded to <= 4 representative tiles so UI widgets
+        and disk thumbnails stay razor-sharp and compact.
         """
+        _ = (center_freq_mhz, label)
         rendered_tiles: List[np.ndarray] = []
         tile_w, tile_h = 176, 104
 
-        for idx, frame in enumerate(frames):
+        z_list = [z for z in (zoom_frames or []) if z is not None and z.ndim == 2 and z.size > 0]
+        zb_list = zoom_boxes or []
+
+        def _pick_indices(n_total: int, k_max: int) -> List[int]:
+            if n_total <= 0:
+                return []
+            if n_total <= k_max:
+                return list(range(n_total))
+            return [int(round(i * (n_total - 1) / float(max(1, k_max - 1)))) for i in range(k_max)]
+
+        if z_list:
+            m_idxs = _pick_indices(len(frames), 2)
+            z_idxs = _pick_indices(len(z_list), 2)
+        else:
+            m_idxs = _pick_indices(len(frames), min(4, max(3, len(frames))))
+            z_idxs = []
+
+        # 1. Render Macro 1.000 MHz context tiles
+        for idx in m_idxs:
+            frame = frames[idx]
             floor_db = float(np.percentile(frame, 18))
             ceil_db = max(floor_db + 18.0, float(np.percentile(frame, 99.5)) + 3.0)
             norm = np.clip((frame - floor_db) / (ceil_db - floor_db) * 255.0, 0, 255).astype(np.uint8)
@@ -287,34 +382,69 @@ class AIPictogramClassifierManager:
             sx = tile_w / float(cols)
             sy = tile_h / float(rows)
 
-            # Center frequency dashed guide
             mid_x = tile_w // 2
             for y in range(0, tile_h, 8):
                 cv2.line(bgr_resized, (mid_x, y), (mid_x, min(tile_h - 1, y + 4)), (180, 255, 255), 1)
 
-            # Draw detected ROI bounding box
             if idx < len(boxes):
                 r0, r1, c0, c1 = boxes[idx]
                 x0, x1 = int(c0 * sx), int(c1 * sx)
                 y0, y1 = int(r0 * sy), int(r1 * sy)
                 cv2.rectangle(bgr_resized, (x0, y0), (x1, y1), (255, 240, 0), 1)
 
-            # Frame header overlay
             cv2.rectangle(bgr_resized, (0, 0), (tile_w, 16), (14, 20, 32), -1)
+            hdr = f"M{idx + 1}/{len(frames)} 1MHz P{dwell_passes}" if dwell_passes > 1 else f"F{idx + 1}/{len(frames)} 1MHz"
             cv2.putText(
                 bgr_resized,
-                f"F{idx + 1}/{len(frames)} 1MHz",
+                hdr,
                 (5, 12),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.36,
+                0.35,
                 (0, 240, 255),
                 1,
                 cv2.LINE_AA,
             )
-            # Border
             cv2.rectangle(bgr_resized, (0, 0), (tile_w - 1, tile_h - 1), (45, 75, 110), 1)
-            rgb_tile = cv2.cvtColor(bgr_resized, cv2.COLOR_BGR2RGB)
-            rendered_tiles.append(rgb_tile)
+            rendered_tiles.append(cv2.cvtColor(bgr_resized, cv2.COLOR_BGR2RGB))
+
+        # 2. Render Ultra-Zoom Micro Waterfall tiles (244 Hz/bin or 977/1953 Hz/bin)
+        span_khz = zoom_span_hz / 1000.0
+        for idx in z_idxs:
+            zf = z_list[idx]
+            floor_db = float(np.percentile(zf, 16))
+            ceil_db = max(floor_db + 16.0, float(np.percentile(zf, 99.5)) + 2.5)
+            norm = np.clip((zf - floor_db) / (ceil_db - floor_db) * 255.0, 0, 255).astype(np.uint8)
+            bgr = cv2.applyColorMap(norm, cv2.COLORMAP_VIRIDIS)
+            bgr_resized = cv2.resize(bgr, (tile_w, tile_h), interpolation=cv2.INTER_CUBIC)
+
+            rows, cols = zf.shape
+            sx = tile_w / float(cols)
+            sy = tile_h / float(rows)
+
+            mid_x = tile_w // 2
+            for y in range(16, tile_h, 6):
+                cv2.line(bgr_resized, (mid_x, y), (mid_x, min(tile_h - 1, y + 3)), (120, 255, 140), 1)
+
+            if idx < len(zb_list):
+                r0, r1, c0, c1 = zb_list[idx]
+                x0, x1 = int(c0 * sx), int(c1 * sx)
+                y0, y1 = int(r0 * sy), int(r1 * sy)
+                cv2.rectangle(bgr_resized, (x0, y0), (x1, y1), (80, 255, 160), 1)
+
+            cv2.rectangle(bgr_resized, (0, 0), (tile_w, 16), (10, 32, 24), -1)
+            z_hdr = f"ZOOM {span_khz:.1f}kHz #{idx + 1}/{len(z_list)}"
+            cv2.putText(
+                bgr_resized,
+                z_hdr,
+                (5, 12),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.34,
+                (90, 255, 165),
+                1,
+                cv2.LINE_AA,
+            )
+            cv2.rectangle(bgr_resized, (0, 0), (tile_w - 1, tile_h - 1), (40, 145, 95), 1)
+            rendered_tiles.append(cv2.cvtColor(bgr_resized, cv2.COLOR_BGR2RGB))
 
         if not rendered_tiles:
             return np.zeros((tile_h, tile_w * 3, 3), dtype=np.uint8)
@@ -325,8 +455,7 @@ class AIPictogramClassifierManager:
             if i > 0:
                 parts.append(sep)
             parts.append(t)
-        strip = np.hstack(parts)
-        return strip
+        return np.hstack(parts)
 
     def analyze_spectrogram_frames(
         self,
@@ -334,10 +463,13 @@ class AIPictogramClassifierManager:
         frames: List[np.ndarray],
         bandwidth_hz: float = 1_000_000.0,
         iq_metrics: Optional[Dict[str, Any]] = None,
+        prior_class_scores: Optional[Dict[str, List[float]]] = None,
+        dwell_passes: int = 1,
     ) -> PictogramAnalysisResult:
         """
-        Runs Hailo-8 classification across ALL (>=3) 1.000 MHz spectrogram frames,
-        aggregates class probabilities across frames, and fuses with IQ modulation signatures.
+        Runs Dual-Scale Hailo-8 classification across ALL Macro 1.000 MHz frames AND ALL
+        Ultra-Zoom (244.14 Hz/bin / 976.6 Hz/bin) frames, fuses multi-pass posterior scores
+        with 7.63 Hz/bin carrier lock & subcarrier metrics, and renders a Dual-Scale RGB strip.
         """
         if not self._initialized:
             self.initialize()
@@ -345,18 +477,33 @@ class AIPictogramClassifierManager:
         iq_metrics = iq_metrics or {}
         t0 = time.perf_counter()
         valid_frames = [f for f in frames if f is not None and f.ndim == 2 and f.size > 0]
+        raw_zoom_frames = iq_metrics.get("zoom_frames") or []
+        valid_zoom_frames = [zf for zf in raw_zoom_frames if zf is not None and zf.ndim == 2 and zf.size > 0]
+        zoom_span_hz = float(iq_metrics.get("zoom_span_hz", 31_250.0 if valid_zoom_frames else 0.0))
+        fine_res_hz = float(iq_metrics.get("fine_fft_resolution_hz", 7.629))
 
-        class_scores: Dict[str, List[float]] = {}
+        # Initialize from prior multi-pass dwell scores if accumulating across passes
+        class_scores: Dict[str, List[float]] = {
+            k: list(v) for k, v in (prior_class_scores or {}).items()
+        }
         per_frame_winners: List[str] = []
         boxes: List[Tuple[int, int, int, int]] = []
+        zoom_boxes: List[Tuple[int, int, int, int]] = []
         rois_analyzed = 0
         used_hw_any = False
+
+        macro_zm = {**iq_metrics, "roi_span_hz": bandwidth_hz}
+        macro_zm.pop("zoom_frames", None)
+        micro_zm = {**macro_zm, "roi_span_hz": max(15_000.0, zoom_span_hz)}
 
         ref_floor_db = iq_metrics.get("ref_floor_dbfs")
         with self._lock:
             if self._extractor is not None and hasattr(self._extractor, "reset"):
                 self._extractor.reset()
-            # 1. Evaluate spectral-floor ROI on EVERY independent 1 MHz frame (>= 3 frames)
+
+            # 1. Evaluate Macro 1.000 MHz context ROIs (evenly strided up to 14 NPU passes/burst)
+            n_m = len(valid_frames)
+            m_eval_set = set(range(n_m)) if n_m <= 14 else {int(round(i * (n_m - 1) / 13.0)) for i in range(14)}
             for idx, frame in enumerate(valid_frames):
                 roi, box = self._build_spectral_frame_roi(
                     frame,
@@ -366,9 +513,9 @@ class AIPictogramClassifierManager:
                     ref_floor_db=float(ref_floor_db) if ref_floor_db is not None else None,
                 )
                 boxes.append(box)
-                if roi is not None and self._classifier is not None:
+                if idx in m_eval_set and roi is not None and self._classifier is not None:
                     try:
-                        det = self._classifier.classify_roi(roi)
+                        det = self._classifier.classify_roi(roi, zoom_metrics=macro_zm)
                         rois_analyzed += 1
                         used_hw_any = used_hw_any or bool(det.hardware_accelerated)
                         if det.top_candidates:
@@ -381,10 +528,10 @@ class AIPictogramClassifierManager:
                             per_frame_winners.append(cname)
                             class_scores.setdefault(cname, []).append(float(det.confidence))
                     except Exception as exc:
-                        logger.debug("Frame %d Hailo classify note: %s", idx, exc)
+                        logger.debug("Macro frame %d Hailo classify note: %s", idx, exc)
 
-                # 2. Also push into rolling WaterfallPictogramExtractor for transient 2D glyphs/chirps
-                if self._extractor is not None:
+                # Rolling 2D glyph/chirp contour extractor
+                if self._extractor is not None and (idx < 3 or idx % max(1, len(valid_frames) // 3) == 0):
                     for row in frame:
                         self._extractor.push_row(row)
                     transient_rois = self._extractor.extract_candidates(
@@ -394,42 +541,102 @@ class AIPictogramClassifierManager:
                     for troi in transient_rois[:2]:
                         if self._classifier is not None:
                             try:
-                                tdet = self._classifier.classify_roi(troi)
+                                tdet = self._classifier.classify_roi(troi, zoom_metrics=macro_zm)
                                 rois_analyzed += 1
                                 used_hw_any = used_hw_any or bool(tdet.hardware_accelerated)
                                 for cand in tdet.top_candidates:
                                     cname = str(cand["class"])
-                                    # Boost distinct 2D transient pictogram detections slightly
                                     weight = 1.15 if cname in ("glyph", "geometric", "raster") else 1.0
                                     class_scores.setdefault(cname, []).append(min(0.99, float(cand["score"]) * weight))
                             except Exception:
                                 pass
 
+            # 2. Evaluate Ultra-Zoom Micro Waterfall ROIs (244.14 Hz/bin narrowband; 976.6/1,953 Hz/bin WFM)
+            n_z = len(valid_zoom_frames)
+            z_eval_set = set(range(n_z)) if n_z <= 14 else {int(round(i * (n_z - 1) / 13.0)) for i in range(14)}
+            for z_idx, z_frame in enumerate(valid_zoom_frames):
+                z_roi, z_box = self._build_zoom_frame_roi(
+                    z_frame,
+                    center_freq_hz=center_freq_hz,
+                    zoom_span_hz=max(15_000.0, zoom_span_hz),
+                    frame_idx=z_idx,
+                )
+                zoom_boxes.append(z_box)
+                if z_idx in z_eval_set and z_roi is not None and self._classifier is not None:
+                    try:
+                        z_det = self._classifier.classify_roi(z_roi, zoom_metrics=micro_zm)
+                        rois_analyzed += 1
+                        used_hw_any = used_hw_any or bool(z_det.hardware_accelerated)
+                        if z_det.top_candidates:
+                            per_frame_winners.append(str(z_det.top_candidates[0]["class"]))
+                            for cand in z_det.top_candidates:
+                                cname = str(cand["class"])
+                                z_w = 1.25 if zoom_span_hz <= 65_000.0 else 1.10
+                                class_scores.setdefault(cname, []).append(min(0.995, float(cand["score"]) * z_w))
+                    except Exception as exc:
+                        logger.debug("Ultra-Zoom frame %d Hailo classify note: %s", z_idx, exc)
+
         snr_db = float(iq_metrics.get("snr_db", 12.0))
-        obw_hz = float(iq_metrics.get("obw_hz", 25_000.0))
+        obw_hz = float(iq_metrics.get("measured_obw_hz", iq_metrics.get("obw_hz", 25_000.0)))
         iq_mod = str(iq_metrics.get("iq_mod_hint", "NFM"))
         duty_cycle = float(iq_metrics.get("duty_cycle", 1.0))
+        tonality_db = float(iq_metrics.get("carrier_tonality_db", 0.0))
+        fsk_rail = float(iq_metrics.get("fsk_rail_score", 0.0))
+        stereo_pilot = bool(iq_metrics.get("stereo_pilot", False))
+        ctcss_hz = float(iq_metrics.get("ctcss_hz", 0.0))
 
-        # Aggregate mean probability across all >=3 evaluated frames with physical allocation gating
+        # Aggregate posterior probabilities across all Macro + Ultra-Zoom + Multi-Pass Dwell frames
+        is_dedicated_pager = (
+            abs(center_freq_hz - 152_480_000) <= 25_000
+            or abs(center_freq_hz - 158_700_000) <= 25_000
+            or abs(center_freq_hz - 454_000_000) <= 25_000
+            or abs(center_freq_hz - 462_750_000) <= 25_000
+            or (929_000_000 <= center_freq_hz <= 932_000_000)
+        )
+
         agg_probs: List[Tuple[str, float]] = []
         if class_scores:
-            raw_means = {k: float(np.mean(v)) for k, v in class_scores.items()}
+            raw_means = {k: float(np.mean(v)) for k, v in class_scores.items() if len(v) > 0}
             if 87.8e6 <= center_freq_hz <= 108.1e6:
                 if "wfm_stereo" in raw_means:
-                    raw_means["wfm_stereo"] *= 1.35
+                    raw_means["wfm_stereo"] *= 1.50 if stereo_pilot else 1.35
                 for unalloc in ("fsk_pager", "atsc_tv", "adsb_pulse", "ism_telemetry"):
                     if unalloc in raw_means:
-                        raw_means[unalloc] *= 0.25
+                        raw_means[unalloc] *= 0.20
             else:
                 if obw_hz < 1_000_000 and "atsc_tv" in raw_means:
                     try:
                         from core.demod_engine import identify_atsc_tv_channel
                         if identify_atsc_tv_channel(center_freq_hz) is None:
-                            raw_means["atsc_tv"] *= 0.30
+                            raw_means["atsc_tv"] *= 0.25
                     except Exception:
-                        raw_means["atsc_tv"] *= 0.30
+                        raw_means["atsc_tv"] *= 0.25
                 if not (976.0e6 <= center_freq_hz <= 1_100.0e6) and "adsb_pulse" in raw_means:
-                    raw_means["adsb_pulse"] *= 0.35
+                    raw_means["adsb_pulse"] *= 0.30
+
+                # AM Voice is physically constrained to MW (0.5-1.7M), HF/CB (3-30M), Airband (108-137M) and Mil-Air (225-400M)
+                is_am_band = (
+                    (530_000 <= center_freq_hz <= 30_000_000)
+                    or (108_000_000 <= center_freq_hz <= 137_000_000)
+                    or (225_000_000 <= center_freq_hz <= 400_000_000)
+                )
+                if not is_am_band and iq_mod != "AM" and "am_voice" in raw_means:
+                    raw_means["am_voice"] *= 0.25
+
+                # Dedicated POCSAG / FLEX Hospital & Public Safety Paging Channel Prior
+                if is_dedicated_pager and "fsk_pager" in raw_means:
+                    raw_means["fsk_pager"] *= 2.40
+
+                # Sub-10 Hz precision physical anchors:
+                if iq_mod == "AM" and tonality_db >= 11.5 and "am_voice" in raw_means:
+                    raw_means["am_voice"] *= 1.30
+                if iq_mod == "NFM" and ctcss_hz >= 60.0 and "nfm_voice" in raw_means:
+                    raw_means["nfm_voice"] *= 1.30
+                if fsk_rail >= 0.36 and duty_cycle < 0.75:
+                    if "fsk_pager" in raw_means:
+                        raw_means["fsk_pager"] *= 1.25
+                    if "ism_telemetry" in raw_means and (310e6 <= center_freq_hz <= 930e6):
+                        raw_means["ism_telemetry"] *= 1.20
 
             total = sum(raw_means.values()) or 1.0
             agg_probs = sorted(
@@ -443,7 +650,6 @@ class AIPictogramClassifierManager:
         best_neural_class, best_neural_conf = agg_probs[0]
         top_candidates = [{"class": k, "score": round(v, 4)} for k, v in agg_probs[:6]]
 
-        # Check if neural head strongly flags noise_reject AND physical SNR/duty is weak
         is_noise = bool(
             best_neural_class == "noise_reject"
             and best_neural_conf >= 0.62
@@ -451,7 +657,6 @@ class AIPictogramClassifierManager:
             and duty_cycle < 0.35
         )
 
-        # Fuse Hailo-8 visual class with RF band & IQ modulation signature into clear operator label
         category, label, final_conf = self._fuse_neural_and_rf_semantics(
             center_freq_hz=center_freq_hz,
             neural_class=best_neural_class,
@@ -461,17 +666,25 @@ class AIPictogramClassifierManager:
             obw_hz=obw_hz,
             snr_db=snr_db,
         )
+        # Multi-pass high-confidence dwell boost when consistent across passes
+        if dwell_passes > 1 and not is_noise:
+            final_conf = min(0.99, final_conf + min(0.06, 0.02 * (dwell_passes - 1)))
 
         composite_rgb = self.render_frames_composite_rgb(
             valid_frames,
             boxes,
             center_freq_mhz=center_freq_hz / 1e6,
             label=label,
+            zoom_frames=valid_zoom_frames,
+            zoom_boxes=zoom_boxes,
+            zoom_span_hz=zoom_span_hz if zoom_span_hz > 0 else 31_250.0,
+            dwell_passes=dwell_passes,
         )
 
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         mean_peak = float(np.mean([np.max(f) for f in valid_frames])) if valid_frames else -80.0
         mean_floor = float(np.mean([np.percentile(f, 20) for f in valid_frames])) if valid_frames else -95.0
+        total_eval_frames = len(valid_frames) + len(valid_zoom_frames)
 
         return PictogramAnalysisResult(
             category=category,
@@ -480,21 +693,32 @@ class AIPictogramClassifierManager:
             confidence=round(final_conf, 3),
             hardware_accelerated=used_hw_any or self._hardware_active,
             latency_ms=round(elapsed_ms, 2),
-            frames_evaluated=len(valid_frames),
+            frames_evaluated=total_eval_frames,
             num_rois_analyzed=rois_analyzed,
             is_noise_rejected=is_noise,
             top_candidates=top_candidates,
             per_frame_classes=per_frame_winners,
             visual_features={
-                "frames_evaluated": len(valid_frames),
+                "frames_evaluated": total_eval_frames,
+                "macro_frames_evaluated": len(valid_frames),
+                "zoom_frames_evaluated": len(valid_zoom_frames),
                 "rois_analyzed": rois_analyzed,
                 "mean_peak_dbfs": round(mean_peak, 1),
                 "mean_floor_dbfs": round(mean_floor, 1),
                 "spectral_bandwidth_hz": bandwidth_hz,
+                "zoom_span_hz": round(zoom_span_hz, 1),
+                "fine_fft_resolution_hz": round(fine_res_hz, 3),
                 "measured_obw_hz": round(obw_hz, 0),
                 "iq_modulation": iq_mod,
+                "ctcss_hz": round(ctcss_hz, 1),
+                "stereo_pilot": stereo_pilot,
+                "dwell_passes": int(dwell_passes),
             },
             composite_rgb=composite_rgb,
+            zoom_frames_evaluated=len(valid_zoom_frames),
+            zoom_span_hz=round(zoom_span_hz, 1),
+            fine_resolution_hz=round(fine_res_hz, 3),
+            accumulated_scores=class_scores,
         )
 
     @staticmethod

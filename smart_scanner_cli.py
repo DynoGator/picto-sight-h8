@@ -83,6 +83,7 @@ def run_headless_scan(
     peak_dbfs: float,
     demod: str,
     frames: int,
+    dwell_passes: Optional[int] = None,
     auto_tune_top: bool = False,
     voice_only: bool = False,
 ) -> int:
@@ -95,6 +96,8 @@ def run_headless_scan(
         demod_mode=demod,
         l3_frames_per_mhz=frames,
     )
+    if dwell_passes is not None:
+        cfg.dwell_passes = max(1, int(dwell_passes))
 
     print("\n" + "=" * 88)
     print(f"AI-POWERED SMART RF SCANNER & PICTOGRAM CLASSIFIER [{cfg.mode} MODE]")
@@ -183,12 +186,13 @@ def main() -> None:
     )
     parser.add_argument("--scan", action="store_true", help="Execute headless multi-layer scan in terminal")
     parser.add_argument("--mode", choices=["quick", "deep", "custom"], default="quick", help="Scan mode")
-    parser.add_argument("--min", type=int, default=88, help="Start frequency in MHz")
-    parser.add_argument("--max", type=int, default=137, help="Stop frequency in MHz")
-    parser.add_argument("--snr", type=float, default=9.0, help="Minimum SNR threshold in dB")
+    parser.add_argument("--min", type=int, default=1, help="Start frequency in MHz (default: 1 MHz Full Spectrum)")
+    parser.add_argument("--max", type=int, default=6000, help="Stop frequency in MHz (default: 6000 MHz Full Spectrum)")
+    parser.add_argument("--snr", type=float, default=8.5, help="Minimum SNR threshold in dB")
     parser.add_argument("--peak", type=float, default=-72.0, help="Minimum Peak Signal Strength in dBFS")
     parser.add_argument("--demod", type=str, default="AUTO (Band + AI)", help="Demodulation mode or AUTO")
-    parser.add_argument("--frames", type=int, default=3, help="Layer 3 spectrogram frames per 1 MHz (>=3)")
+    parser.add_argument("--frames", type=int, default=24, help="Layer 3 Dual-Scale spectrogram frames per signal (>=3)")
+    parser.add_argument("--dwell-passes", type=int, default=None, help="Multi-pass real-time dwell passes per high-confidence signal")
     parser.add_argument("--tune-top", action="store_true", help="Tune strongest signal in Gqrx after CLI scan")
     parser.add_argument("--tune-freq", type=float, default=None, help="Directly tune a frequency (MHz) in Gqrx")
     parser.add_argument(
@@ -379,6 +383,7 @@ def main() -> None:
             peak_dbfs=args.peak,
             demod=args.demod,
             frames=args.frames,
+            dwell_passes=args.dwell_passes,
             auto_tune_top=args.tune_top,
             voice_only=args.voice_only,
         )

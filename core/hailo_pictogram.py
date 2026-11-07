@@ -10,13 +10,14 @@ from __future__ import annotations
 import datetime
 import enum
 import logging
+import math
 import os
 import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -250,6 +251,69 @@ def compute_roi_physical_features(roi: PictogramROI, ref_span_hz: float = 1_000_
         ],
         dtype=np.float32,
     )
+
+
+def compute_extended_rf_features(
+    roi: PictogramROI,
+    zoom_metrics: Optional[Dict[str, Any]] = None,
+) -> np.ndarray:
+    """
+    Computes the 24-dimensional Dual-Scale Ultra-Zoom + Physical RF Feature Vector
+    (16-D spectrogram morphology + 8-D sub-10 Hz precision carrier & subcarrier features)
+    fused with the 1000-D Hailo-8 ResNet-50 embedding (1024-D total):
+      0..15 : compute_roi_physical_features(roi)
+      16    : scale_log_span        - 0.0 for 31.25 kHz Ultra-Zoom, 0.60 for 250 kHz Zoom, 1.0 for 1 MHz Macro
+      17    : carrier_tonality_norm - 7.63 Hz/bin coherent carrier spine prominence (AM/CW/Pilot vs FM/FSK)
+      18    : carrier_narrow_line   - exp(-carrier_3db_width_hz / 180 Hz) sub-100 Hz line indicator
+      19    : sideband_symmetry     - 7.63 Hz/bin lower/upper sideband correlation
+      20    : fsk_rail_norm         - 7.63 Hz/bin bimodal Mark/Space FSK rail score
+      21    : stereo_19k_pilot_norm - 19.000 kHz WFM stereo MPX pilot SNR
+      22    : ctcss_pl_detected     - TIA-603 CTCSS subaudible tone lock indicator (67-254.1 Hz)
+      23    : fine_obw_log_norm     - log-normalized precision occupied bandwidth (500 Hz .. 6 MHz)
+    """
+    base16 = compute_roi_physical_features(roi)
+    zm = zoom_metrics or {}
+
+    span_hz = float(zm.get("roi_span_hz", 1_000_000.0))
+    scale_log_span = float(np.clip(math.log10(max(15_000.0, span_hz) / 31_250.0) / 1.50515, -0.3, 1.2))
+
+    if "carrier_tonality_db" in zm:
+        tonality_norm = float(np.clip(float(zm.get("carrier_tonality_db", 6.0)) / 24.0, 0.0, 1.2))
+    else:
+        tonality_norm = float(np.clip(0.5 + 0.5 * float(base16[10]), 0.0, 1.0))
+
+    if "carrier_3db_width_hz" in zm:
+        c_w = max(5.0, float(zm.get("carrier_3db_width_hz", 1200.0)))
+        narrow_line = float(np.clip(math.exp(-c_w / 180.0), 0.0, 1.0))
+    else:
+        narrow_line = float(np.clip((1.0 - float(base16[7])) * max(0.0, float(base16[10])), 0.0, 1.0))
+
+    if "sideband_symmetry" in zm:
+        sb_sym = float(np.clip(float(zm.get("sideband_symmetry", 0.5)), 0.0, 1.0))
+    else:
+        sb_sym = 0.55
+
+    fsk_rail = float(np.clip(float(zm.get("fsk_rail_score", base16[11])), 0.0, 1.0))
+    pilot_19k = float(np.clip(float(zm.get("stereo_pilot_snr_db", 0.0)) / 20.0, 0.0, 1.2))
+    ctcss_flag = 1.0 if float(zm.get("ctcss_hz", 0.0)) >= 60.0 else 0.0
+
+    obw_val = float(zm.get("measured_obw_hz", zm.get("obw_hz", max(1_000.0, float(roi.bandwidth_hz)))))
+    fine_obw_norm = float(np.clip(math.log10(max(500.0, obw_val) / 500.0) / 4.05, 0.0, 1.2))
+
+    ext8 = np.array(
+        [
+            scale_log_span,
+            tonality_norm,
+            narrow_line,
+            sb_sym,
+            fsk_rail,
+            pilot_19k,
+            ctcss_flag,
+            fine_obw_norm,
+        ],
+        dtype=np.float32,
+    )
+    return np.concatenate([base16, ext8], axis=0).astype(np.float32)
 
 
 # Mapping from fine-grained & legacy neural head classes -> (PictogramCategory, Display Label)
@@ -631,8 +695,14 @@ class HailoPictogramClassifier:
         flat_deep = np.asarray(deep_features, dtype=np.float32).reshape(-1)
         if self._head_weights_loaded and self._w1 is not None and self._w2 is not None:
             expected_dim = int(self._w1.shape[0])
-            if expected_dim == len(flat_deep) + 16 and phys_features is not None:
-                feat_vec = np.concatenate([flat_deep, phys_features.astype(np.float32)], axis=0)
+            if phys_features is not None and expected_dim > len(flat_deep):
+                needed_phys = expected_dim - len(flat_deep)
+                p_vec = phys_features.astype(np.float32)
+                if len(p_vec) >= needed_phys:
+                    feat_vec = np.concatenate([flat_deep, p_vec[:needed_phys]], axis=0)
+                else:
+                    pad = np.zeros(needed_phys - len(p_vec), dtype=np.float32)
+                    feat_vec = np.concatenate([flat_deep, p_vec, pad], axis=0)
             else:
                 feat_vec = flat_deep[:expected_dim]
 
@@ -658,9 +728,11 @@ class HailoPictogramClassifier:
         return "glyph", min(0.99, max(0.40, conf)), [{"class": "glyph", "score": conf}]
 
     def _predict_cpu_fallback(self, phys_features: np.ndarray, roi: PictogramROI) -> Tuple[str, float, list[dict[str, Any]]]:
-        """Run trained 16-D spectral MLP head if available, else deterministic spectral heuristic."""
+        """Run trained 24-D / 16-D spectral MLP head if available, else deterministic spectral heuristic."""
         if self._cpu_w1 is not None and self._cpu_w2 is not None and self._cpu_mean is not None and self._cpu_std is not None:
-            x_norm = (phys_features - self._cpu_mean) / (self._cpu_std + 1e-5)
+            cpu_dim = int(self._cpu_w1.shape[0])
+            p_in = phys_features[:cpu_dim] if len(phys_features) >= cpu_dim else np.pad(phys_features, (0, cpu_dim - len(phys_features)))
+            x_norm = (p_in - self._cpu_mean) / (self._cpu_std + 1e-5)
             h1 = np.maximum(0.0, np.dot(x_norm, self._cpu_w1) + self._cpu_b1)
             logits = np.dot(h1, self._cpu_w2) + self._cpu_b2
             exp_l = np.exp(logits - np.max(logits))
@@ -684,8 +756,9 @@ class HailoPictogramClassifier:
         self,
         roi: PictogramROI,
         source: str = "hackrf",
+        zoom_metrics: Optional[Dict[str, Any]] = None,
     ) -> PictogramDetection:
-        """Execute Hailo-8 neural classification on a 224x224x3 Viridis spectrogram ROI."""
+        """Execute Hailo-8 neural classification on a 224x224x3 Viridis spectrogram ROI (Macro or Ultra-Zoom)."""
         if not self._is_initialized:
             self.initialize()
 
@@ -695,7 +768,7 @@ class HailoPictogramClassifier:
         top_candidates: list[dict[str, Any]] = []
         best_class = "nfm_voice"
         confidence = 0.50
-        phys_feats = compute_roi_physical_features(roi)
+        phys_feats = compute_extended_rf_features(roi, zoom_metrics=zoom_metrics)
 
         if self._is_hardware_active and self._infer_pipeline is not None:
             try:

@@ -498,7 +498,10 @@ class PictogramFramesWidget(QWidget):
         self._snr_db: float = 0.0
         self._peak_dbfs: float = -80.0
         self._bw_khz: float = 0.0
-        self._frames_n: int = 3
+        self._frames_n: int = 24
+        self._dwell_passes: int = 1
+        self._zoom_res_hz: float = 7.63
+        self._sit_notes: str = ""
         self._hw_accel: bool = True
         self._top_classes: List[Tuple[str, float]] = []
         self.setMinimumHeight(105)
@@ -517,6 +520,9 @@ class PictogramFramesWidget(QWidget):
         composite_rgb: Optional[np.ndarray] = None,
         thumbnail_path: str = "",
         top_candidates: Optional[List[Dict[str, Any]]] = None,
+        dwell_passes: int = 1,
+        zoom_res_hz: float = 7.63,
+        situational_notes: str = "",
     ) -> None:
         self._freq_mhz = freq_mhz
         self._label = label
@@ -525,6 +531,9 @@ class PictogramFramesWidget(QWidget):
         self._peak_dbfs = peak_dbfs
         self._bw_khz = bw_hz / 1000.0
         self._frames_n = max(3, int(frames_count))
+        self._dwell_passes = max(1, int(dwell_passes))
+        self._zoom_res_hz = float(zoom_res_hz)
+        self._sit_notes = str(situational_notes or "")
         self._hw_accel = hw_accel
 
         if composite_rgb is not None and composite_rgb.ndim == 3:
@@ -561,11 +570,15 @@ class PictogramFramesWidget(QWidget):
         p.setFont(hdr_font)
         p.setPen(QColor("#00f0ff"))
         hdr_str = (
-            f"1.000 MHz IQ WATERFALL ({self._frames_n} FRAMES) @ {self._freq_mhz:.4f} MHz"
+            f"DUAL-SCALE 1MHz + ULTRA-ZOOM ({self._frames_n}f • {self._dwell_passes}p @{self._zoom_res_hz:.1f}Hz) @ {self._freq_mhz:.4f} MHz"
             if self._freq_mhz > 0
-            else "1.000 MHz MULTI-FRAME PICTOGRAM WATERFALL (MIN 3 FRAMES / 1 MHz)"
+            else "DUAL-SCALE 1.000 MHz + 244 Hz/bin ULTRA-ZOOM WATERFALL (MULTI-PASS AI DWELL)"
         )
-        p.drawText(QRectF(6.0, 2.0, left_w - 8.0, 15.0), Qt.AlignmentFlag.AlignVCenter, hdr_str)
+        p.drawText(
+            QRectF(6.0, 2.0, left_w - 8.0, 15.0),
+            Qt.AlignmentFlag.AlignVCenter,
+            p.fontMetrics().elidedText(hdr_str, Qt.TextElideMode.ElideRight, int(left_w - 8.0)),
+        )
 
         if self._pixmap is not None and not self._pixmap.isNull():
             scaled = self._pixmap.scaled(

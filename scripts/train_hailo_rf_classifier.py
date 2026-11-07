@@ -27,6 +27,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from core.hailo_pictogram import (
     HailoPictogramClassifier,
     PictogramROI,
+    compute_extended_rf_features,
     compute_roi_physical_features,
 )
 from core.pictogram_engine import AIPictogramClassifierManager
@@ -295,16 +296,231 @@ def synthesize_class_frame(cls_name: str, rng: np.random.Generator) -> Tuple[np.
     floor_med = float(np.median(frame))
     sub_mode = int(rng.integers(0, 3))
     if sub_mode == 1:
-        # Random weak thermal speckle
         for _ in range(int(rng.integers(2, 6))):
             rr = int(rng.integers(0, 62))
             cc = int(rng.integers(40, 88))
             frame[rr : rr + 2, cc : cc + 2] += float(rng.uniform(3.5, 6.5))
     elif sub_mode == 2:
-        # Weak wideband impulse click (1 row) or faint 1-bin LO leakage
         rr = int(rng.integers(5, 58))
         frame[rr, 48:80] += float(rng.uniform(3.0, 5.8))
     return frame, floor_med
+
+
+def synthesize_ultra_zoom_frame_and_metrics(
+    cls_name: str,
+    rng: np.random.Generator,
+    is_zoom: bool,
+) -> Tuple[np.ndarray, float, dict]:
+    """
+    Synthesizes either a 1.000 MHz High-Def Macro frame OR a 31.25 kHz (244.14 Hz/bin) /
+    250 kHz (1,953.1 Hz/bin) Ultra-Zoom Micro Waterfall frame + calibrated 7.63 Hz/bin
+    precision carrier & subcarrier metrics so the 1024-D Hailo-8 head masters BOTH scales!
+    """
+    snr_db = float(rng.uniform(10.0, 38.0))
+    base_floor = float(rng.uniform(-89.0, -81.0))
+
+    # Realistic 7.63 Hz/bin precision DSP metrics per RF modulation class
+    if cls_name == "wfm_stereo":
+        zm = {
+            "roi_span_hz": 250_000.0 if is_zoom else 1_000_000.0,
+            "carrier_tonality_db": float(rng.uniform(1.5, 7.0)),
+            "carrier_3db_width_hz": float(rng.uniform(18_000.0, 68_000.0)),
+            "sideband_symmetry": float(rng.uniform(0.65, 0.95)),
+            "fsk_rail_score": float(rng.uniform(0.0, 0.18)),
+            "stereo_pilot_snr_db": float(rng.uniform(8.5, 22.0)) if rng.random() < 0.88 else float(rng.uniform(0.0, 4.0)),
+            "ctcss_hz": 0.0,
+            "measured_obw_hz": float(rng.uniform(135_000.0, 215_000.0)),
+        }
+    elif cls_name == "nfm_voice":
+        zm = {
+            "roi_span_hz": 31_250.0 if is_zoom else 1_000_000.0,
+            "carrier_tonality_db": float(rng.uniform(3.0, 9.8)),
+            "carrier_3db_width_hz": float(rng.uniform(950.0, 4_800.0)),
+            "sideband_symmetry": float(rng.uniform(0.55, 0.90)),
+            "fsk_rail_score": float(rng.uniform(0.0, 0.22)),
+            "stereo_pilot_snr_db": 0.0,
+            "ctcss_hz": float(rng.choice([0.0, 100.0, 107.2, 123.0, 136.5, 151.4])),
+            "measured_obw_hz": float(rng.uniform(9_500.0, 22_000.0)),
+        }
+    elif cls_name == "am_voice":
+        zm = {
+            "roi_span_hz": 31_250.0 if is_zoom else 1_000_000.0,
+            "carrier_tonality_db": float(rng.uniform(12.5, 27.0)),
+            "carrier_3db_width_hz": float(rng.uniform(14.0, 58.0)),
+            "sideband_symmetry": float(rng.uniform(0.68, 0.97)),
+            "fsk_rail_score": float(rng.uniform(0.0, 0.10)),
+            "stereo_pilot_snr_db": 0.0,
+            "ctcss_hz": 0.0,
+            "measured_obw_hz": float(rng.uniform(6_800.0, 13_500.0)),
+        }
+    elif cls_name == "atsc_tv":
+        zm = {
+            "roi_span_hz": 31_250.0 if is_zoom else 1_000_000.0,
+            "carrier_tonality_db": float(rng.uniform(12.0, 22.0)),
+            "carrier_3db_width_hz": float(rng.uniform(15.0, 65.0)),
+            "sideband_symmetry": float(rng.uniform(0.15, 0.48)),
+            "fsk_rail_score": 0.0,
+            "stereo_pilot_snr_db": 0.0,
+            "ctcss_hz": 0.0,
+            "measured_obw_hz": 5_380_000.0,
+        }
+    elif cls_name == "fsk_pager":
+        zm = {
+            "roi_span_hz": 31_250.0 if is_zoom else 1_000_000.0,
+            "carrier_tonality_db": float(rng.uniform(1.0, 7.5)),
+            "carrier_3db_width_hz": float(rng.uniform(800.0, 5_500.0)),
+            "sideband_symmetry": float(rng.uniform(0.50, 0.92)),
+            "fsk_rail_score": float(rng.uniform(0.42, 0.95)),
+            "stereo_pilot_snr_db": 0.0,
+            "ctcss_hz": 0.0,
+            "measured_obw_hz": float(rng.uniform(11_000.0, 25_000.0)),
+        }
+    elif cls_name == "ism_telemetry":
+        zm = {
+            "roi_span_hz": 31_250.0 if is_zoom else 1_000_000.0,
+            "carrier_tonality_db": float(rng.uniform(3.0, 14.0)),
+            "carrier_3db_width_hz": float(rng.uniform(180.0, 3_200.0)),
+            "sideband_symmetry": float(rng.uniform(0.45, 0.85)),
+            "fsk_rail_score": float(rng.uniform(0.10, 0.65)),
+            "stereo_pilot_snr_db": 0.0,
+            "ctcss_hz": 0.0,
+            "measured_obw_hz": float(rng.uniform(8_000.0, 42_000.0)),
+        }
+    elif cls_name == "adsb_pulse":
+        zm = {
+            "roi_span_hz": 250_000.0 if is_zoom else 1_000_000.0,
+            "carrier_tonality_db": float(rng.uniform(1.0, 5.0)),
+            "carrier_3db_width_hz": float(rng.uniform(120_000.0, 450_000.0)),
+            "sideband_symmetry": float(rng.uniform(0.55, 0.90)),
+            "fsk_rail_score": 0.0,
+            "stereo_pilot_snr_db": 0.0,
+            "ctcss_hz": 0.0,
+            "measured_obw_hz": float(rng.uniform(420_000.0, 920_000.0)),
+        }
+    elif cls_name in ("glyph", "geometric"):
+        zm = {
+            "roi_span_hz": 31_250.0 if is_zoom else 1_000_000.0,
+            "carrier_tonality_db": float(rng.uniform(1.0, 6.5)),
+            "carrier_3db_width_hz": float(rng.uniform(2_500.0, 35_000.0)),
+            "sideband_symmetry": float(rng.uniform(0.20, 0.65)),
+            "fsk_rail_score": float(rng.uniform(0.0, 0.25)),
+            "stereo_pilot_snr_db": 0.0,
+            "ctcss_hz": 0.0,
+            "measured_obw_hz": float(rng.uniform(22_000.0, 180_000.0)),
+        }
+    else:  # noise_reject
+        zm = {
+            "roi_span_hz": 31_250.0 if is_zoom else 1_000_000.0,
+            "carrier_tonality_db": float(rng.uniform(0.0, 3.5)),
+            "carrier_3db_width_hz": float(rng.uniform(20.0, 15_000.0)),
+            "sideband_symmetry": float(rng.uniform(0.25, 0.65)),
+            "fsk_rail_score": float(rng.uniform(0.0, 0.12)),
+            "stereo_pilot_snr_db": 0.0,
+            "ctcss_hz": 0.0,
+            "measured_obw_hz": float(rng.uniform(7_800.0, 35_000.0)),
+        }
+
+    if not is_zoom:
+        m_frame, m_floor = synthesize_class_frame(cls_name, rng)
+        return m_frame, m_floor, zm
+
+    # Synthesize realistic 64x128 Ultra-Zoom (244.14 Hz/bin or 1,953.1 Hz/bin) waterfall frame!
+    z = rng.normal(base_floor, 1.55, size=(64, 128)).astype(np.float32)
+    mid = 64 + int(rng.integers(-2, 3))
+    t_rows = np.linspace(0.0, 1.0, 64, dtype=np.float32)
+
+    if cls_name == "wfm_stereo":
+        # 250 kHz span @ 1,953 Hz/bin: wide 75-105 bin FM deviation filling zoomed frame + stereo shoulders
+        w_half = int(rng.integers(34, 52))
+        x = np.arange(128, dtype=np.float32) - mid
+        for r in range(64):
+            inst_shift = float(rng.normal(0.0, 6.0))
+            env_db = snr_db * np.exp(-0.5 * ((x - inst_shift) / max(8.0, w_half * 0.55)) ** 2)
+            z[r] = np.maximum(z[r], base_floor + env_db + rng.normal(0.0, 1.1, size=128).astype(np.float32))
+        return z, base_floor, zm
+
+    if cls_name == "nfm_voice":
+        # 31.25 kHz span @ 244.14 Hz/bin: meandering FM voice track spanning +-10..22 bins (+-2.5..5.4 kHz)!
+        dev_bins = float(rng.uniform(9.0, 22.0))
+        mod_wave = dev_bins * (
+            0.6 * np.sin(2.0 * np.pi * float(rng.uniform(1.5, 4.5)) * t_rows + float(rng.uniform(0, 6.28)))
+            + 0.4 * np.cos(2.0 * np.pi * float(rng.uniform(4.0, 9.0)) * t_rows)
+        )
+        active_start = 0 if rng.random() > 0.2 else int(rng.integers(6, 18))
+        x = np.arange(128, dtype=np.float32)
+        for r in range(active_start, 64):
+            c_inst = mid + mod_wave[r]
+            line = snr_db * np.exp(-0.5 * ((x - c_inst) / float(rng.uniform(3.2, 6.5))) ** 2)
+            z[r] = np.maximum(z[r], base_floor + line)
+        return z, base_floor, zm
+
+    if cls_name == "am_voice":
+        # 31.25 kHz span @ 244.14 Hz/bin: razor-sharp 1-2 bin steady central carrier spine + symmetric +-18 bin speech sidebands!
+        x = np.arange(128, dtype=np.float32) - mid
+        spine = (snr_db + 4.0) * np.exp(-0.5 * (x / 1.15) ** 2)
+        sb_width = float(rng.uniform(12.0, 22.0))
+        for r in range(64):
+            syl = max(0.0, float(0.55 + 0.45 * math.sin(2.0 * math.pi * float(rng.uniform(2.0, 6.0)) * (r / 64.0)) + rng.normal(0, 0.2)))
+            sb = (snr_db * 0.62 * syl) * np.exp(-0.5 * (np.abs(x) / sb_width) ** 2) * (1.0 - np.exp(-0.5 * (x / 2.2) ** 2))
+            z[r] = np.maximum(z[r], base_floor + np.maximum(spine, sb))
+        return z, base_floor, zm
+
+    if cls_name == "atsc_tv":
+        # 31.25 kHz span centered on +309.441 kHz 8VSB pilot: razor-sharp pilot line + asymmetric raised-cosine shelf!
+        x = np.arange(128, dtype=np.float32) - mid
+        shelf_db = float(rng.uniform(9.0, 20.0))
+        pilot_db = shelf_db + float(rng.uniform(7.5, 13.0))
+        z[:, mid - 12 :] = np.maximum(
+            z[:, mid - 12 :],
+            base_floor + shelf_db + rng.normal(0.0, 1.2, size=(64, 128 - (mid - 12))).astype(np.float32),
+        )
+        pilot_line = pilot_db * np.exp(-0.5 * (x / 1.2) ** 2)
+        z = np.maximum(z, base_floor + pilot_line[None, :])
+        return z, base_floor, zm
+
+    if cls_name == "fsk_pager":
+        # 31.25 kHz span @ 244.14 Hz/bin: crisp twin Mark/Space rails at +-18..36 bins (+-4.5..8.8 kHz) in packet bursts!
+        shift_bins = float(rng.uniform(16.0, 36.0))
+        x = np.arange(128, dtype=np.float32) - mid
+        b0 = int(rng.integers(0, 16))
+        b1 = int(rng.integers(40, 64))
+        for r in range(b0, b1):
+            rail_l = snr_db * np.exp(-0.5 * ((x + shift_bins) / 2.8) ** 2)
+            rail_r = snr_db * np.exp(-0.5 * ((x - shift_bins) / 2.8) ** 2)
+            bridge = (snr_db * 0.32) * (np.abs(x) <= shift_bins).astype(np.float32)
+            z[r] = np.maximum(z[r], base_floor + np.maximum(np.maximum(rail_l, rail_r), bridge))
+        return z, base_floor, zm
+
+    if cls_name == "ism_telemetry":
+        # 31.25 kHz span @ 244.14 Hz/bin: rapid OOK / PWM telemetry pulse train across 8-24 bins
+        w_b = float(rng.uniform(3.5, 9.5))
+        x = np.arange(128, dtype=np.float32) - mid
+        r_cur = int(rng.integers(2, 8))
+        while r_cur < 61:
+            plen = int(rng.integers(1, 4))
+            gap = int(rng.integers(2, 5))
+            pulse_p = snr_db * np.exp(-0.5 * (x / w_b) ** 2)
+            z[r_cur : min(64, r_cur + plen)] = np.maximum(
+                z[r_cur : min(64, r_cur + plen)],
+                base_floor + pulse_p[None, :],
+            )
+            r_cur += plen + gap
+        return z, base_floor, zm
+
+    if cls_name == "adsb_pulse":
+        # 250 kHz zoomed span: 1-3 ultra-short full-width Mode-S pulses
+        for _ in range(int(rng.integers(1, 5))):
+            r0 = int(rng.integers(2, 60))
+            rh = int(rng.integers(1, 3))
+            z[r0 : r0 + rh, :] = np.maximum(
+                z[r0 : r0 + rh, :],
+                base_floor + snr_db + rng.normal(0.0, 1.4, size=(rh, 128)).astype(np.float32),
+            )
+        return z, base_floor, zm
+
+    # glyph, geometric, noise_reject reuse spatial 64x128 morphology at zoomed scale
+    f_m, fl_m = synthesize_class_frame(cls_name, rng)
+    return f_m, fl_m, zm
 
 
 def train_mlp(
@@ -397,7 +613,7 @@ def train_mlp(
 
 def main() -> int:
     t0 = time.perf_counter()
-    samples_per_class = 250  # 2,500 total frames (2,000 train / 500 val)
+    samples_per_class = 400  # 4,000 Dual-Scale frames (200 Macro 1MHz + 200 Ultra-Zoom 244Hz/bin per class!)
     rng = np.random.default_rng(20261107)
 
     clf = HailoPictogramClassifier(fallback_ok=False)
@@ -413,30 +629,46 @@ def main() -> int:
     phys_list: List[np.ndarray] = []
     labels_list: List[int] = []
 
-    print(f"[1/4] Synthesizing {samples_per_class * len(CLASSES)} physics-grounded RF STFT frames & extracting Hailo-8 embeddings...")
+    print(
+        f"[1/4] Synthesizing {samples_per_class * len(CLASSES)} Dual-Scale (1MHz Macro + 244Hz/bin Ultra-Zoom) "
+        f"RF frames & extracting Hailo-8 26 TOPS embeddings..."
+    )
     t_inf = 0.0
     for c_idx, cls_name in enumerate(CLASSES):
         for s_idx in range(samples_per_class):
-            frame, ref_floor = synthesize_class_frame(cls_name, rng)
-            roi, _ = mgr._build_spectral_frame_roi(
-                frame=frame,
-                center_freq_hz=150_000_000.0,
-                bandwidth_hz=1_000_000.0,
-                frame_idx=s_idx,
-                ref_floor_db=ref_floor,
-            )
+            is_zoom = bool(s_idx >= (samples_per_class // 2))
+            frame, ref_floor, zm = synthesize_ultra_zoom_frame_and_metrics(cls_name, rng, is_zoom=is_zoom)
+            if is_zoom:
+                roi, _ = mgr._build_zoom_frame_roi(
+                    z_frame=frame,
+                    center_freq_hz=150_000_000.0,
+                    zoom_span_hz=float(zm["roi_span_hz"]),
+                    frame_idx=s_idx,
+                )
+            else:
+                roi, _ = mgr._build_spectral_frame_roi(
+                    frame=frame,
+                    center_freq_hz=150_000_000.0,
+                    bandwidth_hz=1_000_000.0,
+                    frame_idx=s_idx,
+                    ref_floor_db=ref_floor,
+                )
             assert roi is not None
             ti0 = time.perf_counter()
             emb = clf.extract_hailo_embedding(roi.normalized_rgb)
             t_inf += time.perf_counter() - ti0
             assert emb is not None
-            phys = compute_roi_physical_features(roi)
+            phys = compute_extended_rf_features(roi, zoom_metrics=zm)
+            assert phys.shape == (24,)
 
             deep_list.append(emb)
             phys_list.append(phys)
             labels_list.append(c_idx)
 
-        print(f"      Class [{c_idx + 1:2d}/{len(CLASSES)}] {cls_name:15s}: {samples_per_class} embeddings extracted")
+        print(
+            f"      Class [{c_idx + 1:2d}/{len(CLASSES)}] {cls_name:15s}: "
+            f"{samples_per_class} Dual-Scale embeddings extracted"
+        )
 
     clf.close()
 
@@ -448,38 +680,41 @@ def main() -> int:
     avg_ms = (t_inf / len(y_all)) * 1000.0
     print(f"      Hailo-8 mean NPU inference latency: {avg_ms:.2f} ms/ROI ({1000.0 / max(0.01, avg_ms):.0f} FPS)")
 
-    # Stratified 80/20 train/val split
+    # Stratified 80/20 train/val split across both Macro and Ultra-Zoom halves
     train_idx: List[int] = []
     val_idx: List[int] = []
     for c_idx in range(len(CLASSES)):
         c_rows = np.where(y_all == c_idx)[0]
-        rng.shuffle(c_rows)
-        n_tr = int(0.8 * len(c_rows))
-        train_idx.extend(c_rows[:n_tr].tolist())
-        val_idx.extend(c_rows[n_tr:].tolist())
+        macro_rows = c_rows[: len(c_rows) // 2].copy()
+        zoom_rows = c_rows[len(c_rows) // 2 :].copy()
+        rng.shuffle(macro_rows)
+        rng.shuffle(zoom_rows)
+        nm = int(0.8 * len(macro_rows))
+        nz = int(0.8 * len(zoom_rows))
+        train_idx.extend(macro_rows[:nm].tolist() + zoom_rows[:nz].tolist())
+        val_idx.extend(macro_rows[nm:].tolist() + zoom_rows[nz:].tolist())
 
     X_tr_raw, y_tr = X_full[train_idx], y_all[train_idx]
     X_va_raw, y_va = X_full[val_idx], y_all[val_idx]
 
-    # Calibrated BatchNorm parameters over 1016-D fused vector
+    # Calibrated BatchNorm parameters over 1024-D (1000-D Hailo-8 + 24-D Multi-Scale RF) vector
     bn_eps = 1e-5
     bn_mean = np.mean(X_tr_raw, axis=0).astype(np.float32)
     bn_var = np.var(X_tr_raw, axis=0).astype(np.float32)
-    # Prevent zero-variance division on sparse ReLU/softmax channels
     bn_var = np.maximum(bn_var, 1e-4).astype(np.float32)
     bn_weight = np.ones_like(bn_mean, dtype=np.float32)
-    # Upweight the 16 physical RF features slightly (1.6x) so physical scale anchors deep ResNet textures
-    bn_weight[-16:] = 1.6
+    # Upweight the 24 physical + ultra-zoom precision features (1.75x) to anchor ResNet visual textures
+    bn_weight[-24:] = 1.75
     bn_bias = np.zeros_like(bn_mean, dtype=np.float32)
 
     X_tr_norm = ((X_tr_raw - bn_mean) / np.sqrt(bn_var + bn_eps)) * bn_weight + bn_bias
     X_va_norm = ((X_va_raw - bn_mean) / np.sqrt(bn_var + bn_eps)) * bn_weight + bn_bias
 
-    print(f"[2/4] Training 1016 -> 192 -> {len(CLASSES)} Hailo-8 + Physical RF Fusion MLP...")
+    print(f"[2/4] Training {X_full.shape[1]} -> 224 -> {len(CLASSES)} Dual-Scale Hailo-8 + Ultra-Zoom RF Fusion MLP...")
     w1, b1, w2, b2, val_acc = train_mlp(
-        X_tr_norm, y_tr, X_va_norm, y_va, hidden_dim=192, num_classes=len(CLASSES), epochs=340, lr=2.8e-3
+        X_tr_norm, y_tr, X_va_norm, y_va, hidden_dim=224, num_classes=len(CLASSES), epochs=360, lr=2.6e-3
     )
-    print(f"      Held-out Hailo-8 Validation Accuracy: {val_acc * 100.0:.2f}% ({len(y_va)} unseen frames)")
+    print(f"      Held-out Hailo-8 Validation Accuracy: {val_acc * 100.0:.2f}% ({len(y_va)} unseen Macro+Zoom frames)")
 
     # Per-class validation report
     val_h1 = np.maximum(0.0, X_va_norm @ w1 + b1)
@@ -489,15 +724,15 @@ def main() -> int:
         c_acc = float(np.mean(val_preds[mask] == c_idx))
         print(f"        - {cname:15s}: {c_acc * 100.0:6.2f}%")
 
-    # Train 16-D CPU fallback MLP head
-    print(f"[3/4] Training 16 -> 64 -> {len(CLASSES)} CPU Spectral Fallback MLP...")
+    # Train 24-D CPU fallback MLP head
+    print(f"[3/4] Training 24 -> 80 -> {len(CLASSES)} CPU Ultra-Zoom Spectral Fallback MLP...")
     Xp_tr, Xp_va = X_phys[train_idx], X_phys[val_idx]
     cpu_mean = np.mean(Xp_tr, axis=0).astype(np.float32)
     cpu_std = np.maximum(np.std(Xp_tr, axis=0), 1e-4).astype(np.float32)
     Xp_tr_n = (Xp_tr - cpu_mean) / (cpu_std + 1e-5)
     Xp_va_n = (Xp_va - cpu_mean) / (cpu_std + 1e-5)
     cpu_w1, cpu_b1, cpu_w2, cpu_b2, cpu_acc = train_mlp(
-        Xp_tr_n, y_tr, Xp_va_n, y_va, hidden_dim=64, num_classes=len(CLASSES), epochs=360, lr=4e-3
+        Xp_tr_n, y_tr, Xp_va_n, y_va, hidden_dim=80, num_classes=len(CLASSES), epochs=380, lr=3.8e-3
     )
     print(f"      Held-out CPU Fallback Validation Accuracy: {cpu_acc * 100.0:.2f}%")
 

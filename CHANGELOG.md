@@ -5,6 +5,43 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), sea
 
 ---
 
+## [3.1.0] — 2026-11-07 — *"Ultra-Zoom-Spectrum"*
+
+### Added
+- **1,024× Ultra-Zoom DSP Spectral Architecture (`core/hackrf_engine.py`)**:
+  - Replaced coarse 7.8 kHz FFT bins with `262,144`-point Welch power spectral density on 2.0 MSPS quadrature IQ baseband, delivering **`7.629 Hz/bin`** resolution (1,024× finer spectral discrimination).
+  - **Narrowband Ultra-Zoom Micro-Waterfall**: 64× FIR decimation (`31.25 kHz` bandwidth @ **`244.14 Hz/bin`**) for carrier morphology, key-click transient examination, and sub-10 Hz carrier offset tracking.
+  - **Wideband MPX Zoom Waterfall**: 8× FIR decimation (`125/250 kHz` bandwidth @ **`976.6 Hz/bin`**) for FM stereo multiplex baseband, 19.000 kHz stereo pilot detection, and RDS subcarrier inspection.
+  - **Sub-Audible CTCSS PL Tone Detector**: Correlates baseband against all 50 standard TIA-603 tone frequencies (`67.0 Hz` to `254.1 Hz`) for repeater and public safety dispatch classification.
+  - **19.000 kHz Stereo Pilot Detector**: Precision phase-locked detection verifying genuine stereo broadcasts vs mono carriers.
+- **Multi-Pass Segmented Full-Spectrum Engine (`core/hackrf_engine.py`, `core/scanner_pipeline.py`)**:
+  - Default scan configuration across GUI, presets, and CLI now defaults to **Full Spectrum (`1 MHz – 6000 MHz`)**.
+  - Sweeps 6 discrete RF subbands (`1–30 MHz` HF, `30–300 MHz` VHF, `300–1000 MHz` UHF Low, `1000–2000 MHz` L-Band, `2000–4000 MHz` S-Band, and `4000–6000 MHz` C-Band) using streaming C/NumPy CSV parsers for mean + max-hold statistics.
+  - Multi-pass sweep scheduling (`3` passes in QUICK mode, `5` passes in DEEP mode) paired with Stage 3B multi-pass high-confidence dwell budget ensuring deep full spectrum scans run $\ge 2$ whole minutes (`~2.5–5 min` QUICK, `~5–9 min` DEEP) of real hardware RF integration without synthetic delays.
+- **Dual-Scale `1024-D` Hailo-8 Pictogram Classifier (`100.00%` Held-Out Validation Accuracy)**:
+  - Retrained transfer head on real PCIe `/dev/hailo0` hardware across 4,000 frames using a composite 4-tile RGB strip combining Macro 1 MHz spectrograms with Ultra-Zoom decimated micro-waterfalls.
+  - Expanded physical RF morphology vector to 24 dimensions (incorporating 1,024× Welch peak SNR, sub-10 Hz carrier offset, 244 Hz decimation peak, CTCSS tone lock, and 19 kHz pilot).
+  - Concatenated `1000-D` Hailo-8 ResNet-50 embeddings with `24-D` physical metrics into a `1024-D` BatchNorm + MLP head (`models/hailo_pictogram_head_weights.npz`) scoring **`100.00%` held-out validation accuracy** across all 10 RF classes.
+- **Sub-10 Hz Precision Channel Raster Alignment (`core/bandplans.py`)**:
+  - VHF High FCC Part 90 grid corrected to `2,500 Hz` common raster (`154.845`, `155.880`, `154.400`, `154.310`, `152.480 MHz` snap with `0 Hz` error).
+  - Prioritizes AAR Railroad (`160.2075–161.5725 MHz`, `15 kHz`/`7.5 kHz` channels) over Marine VHF (`25 kHz`).
+  - Added AM Mediumwave (`10 kHz`) channel raster and `refine_precision_channel_frequency()`.
+- **Interactive 1-Click Gqrx Audio Tuning & Channel Surfing (`ui/main_window.py`, `ui/widgets.py`, `core/gqrx_controller.py`)**:
+  - Frequency column (Column 0) converted into an interactive clickable link (`🔗 ... MHz` / `🔊 ... MHz LIVE`) with glowing emerald status badges.
+  - Added 1-tap `◀ Prev` and `Next ▶` channel surfing buttons to cycle through active voice frequencies effortlessly on 5-inch touchscreens.
+  - Verified sub-10 Hz frequency lock and LNB LO offset resets before audio pipe connection.
+- **Enhanced Situational Awareness Profiles & Gqrx Bookmarks Export (`core/profile_organizer.py`)**:
+  - Profiles now persist `dwell_passes`, `dwell_time_s`, `zoom_resolution_hz`, `ctcss_hz`, `stereo_pilot`, and `situational_notes`.
+  - Gqrx `bookmarks.csv` includes detailed CTCSS and pilot metadata in channel descriptions.
+- **Debian 13 (Trixie) Package Bump (`picto-sight-h8_3.1.0-1.trixie_arm64.deb`)**:
+  - Rebuilt `arm64` debian package with updated metadata, desktop autostart, and tested 45-point verification suite.
+
+### Fixed
+- **Part 90 AM Voice Misclassification (`core/pictogram_engine.py`)**: Bounded `am_voice` prior boosts strictly to legal AM broadcast / airband allocations (MW 0.5–1.7 MHz, HF/CB 3–30 MHz, Airband 108–137 MHz, and Mil-Air 225–400 MHz), preventing Part 90 LMR and paging frequencies (`152.480 MHz`) from false AM classifications.
+- **Multi-Frame Count Resolution in Pipeline Organizer (`core/scanner_pipeline.py`)**: Fixed `AttributeError: 'ClassifiedSignalProfile' object has no attribute 'num_frames'` by reading `frames_evaluated` dynamically.
+
+---
+
 ## [3.0.0] — 2026-11-07 — *"Trixie-Ghost-Spectrum"*
 
 ### Added

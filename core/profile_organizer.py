@@ -245,6 +245,12 @@ class ClassifiedSignalProfile:
     demod_cmd: str = ""               # Specialized demodulator CLI command
     atsc_channel: Optional[int] = None # ATSC television channel (2-36) if TV broadcast
     thumbnail_path: str = ""
+    dwell_passes: int = 1             # Number of real-time IQ + Hailo-8 dwell passes
+    dwell_time_s: float = 0.0         # Total cumulative IQ dwell duration in seconds
+    zoom_resolution_hz: float = 7.63  # Precision carrier FFT bin width (7.629 Hz = 1,024x detail)
+    ctcss_hz: float = 0.0             # Detected TIA-603 CTCSS subaudible PL tone (Hz)
+    stereo_pilot: bool = False        # True when 19.000 kHz WFM stereo MPX pilot is locked
+    situational_notes: str = ""       # Multi-pass RF situational awareness summary
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -296,6 +302,12 @@ class ClassifiedSignalProfile:
             "demod_cmd": demod_target.command,
             "atsc_channel": demod_target.atsc_channel,
             "thumbnail_path": "",
+            "dwell_passes": 1,
+            "dwell_time_s": 0.0,
+            "zoom_resolution_hz": 7.63,
+            "ctcss_hz": 0.0,
+            "stereo_pilot": False,
+            "situational_notes": "",
         }
         merged = {**defaults, **data}
         if not merged.get("voice_label"):
@@ -460,6 +472,9 @@ class SignalProfileOrganizer:
                 demod_override=demod_override,
                 squelch_mode=squelch_mode,
                 region=gps_fix.region_code,
+                stereo_pilot=s.get("stereo_pilot"),
+                ctcss_hz=float(s.get("ctcss_hz", 0.0)),
+                freq_dev_hz=float(s.get("freq_dev_85_hz", 0.0)),
             )
 
             if only_legal and not feasibility["is_legal"]:
@@ -559,6 +574,12 @@ class SignalProfileOrganizer:
                 demod_cmd=demod_target.command,
                 atsc_channel=demod_target.atsc_channel,
                 thumbnail_path=thumb_file,
+                dwell_passes=max(1, int(s.get("dwell_passes", 1))),
+                dwell_time_s=round(float(s.get("dwell_time_s", 0.0)), 2),
+                zoom_resolution_hz=round(float(s.get("zoom_resolution_hz", 7.63)), 2),
+                ctcss_hz=round(float(s.get("ctcss_hz", 0.0)), 1),
+                stereo_pilot=bool(s.get("stereo_pilot", False)),
+                situational_notes=str(s.get("situational_notes", "")),
             )
             profiles.append(prof)
 
@@ -573,8 +594,8 @@ class SignalProfileOrganizer:
         profile_csv_path = self.profiles_dir / f"{profile_id}_bookmarks.csv"
 
         city_short = gps_fix.locality_name.split(",")[0].strip()
-        f_min = int(getattr(scan_config, "freq_min_mhz", 88))
-        f_max = int(getattr(scan_config, "freq_max_mhz", 137))
+        f_min = int(getattr(scan_config, "freq_min_mhz", 1))
+        f_max = int(getattr(scan_config, "freq_max_mhz", 6000))
         display_title = (
             f"{city_short} ({gps_fix.maidenhead_grid}) • {approx_dt} • "
             f"{mode_str} {f_min}-{f_max}MHz ({len(profiles)} sigs)"
@@ -775,11 +796,16 @@ class SignalProfileOrganizer:
             prefix = "[ACTIVE] " if is_target else ""
             # Sanitize semicolons and commas cleanly for Gqrx's ';' parser
             base_name = p.signal_name.replace(";", "-").strip()
-            ai_badge = f"AI:{p.pictogram_label} {int(round(p.pictogram_confidence * 100))}%"
+            extra_sub = ""
+            if getattr(p, "ctcss_hz", 0.0) >= 60.0:
+                extra_sub = f" PL:{p.ctcss_hz:.1f}Hz"
+            elif getattr(p, "stereo_pilot", False):
+                extra_sub = " 19kHz-ST"
+            ai_badge = f"AI:{p.pictogram_label} {int(round(p.pictogram_confidence * 100))}%{extra_sub}"
             if p.pictogram_label not in base_name:
                 full_name = f"{prefix}{base_name} [{ai_badge}]"
             else:
-                full_name = f"{prefix}{base_name} ({int(round(p.pictogram_confidence * 100))}%)"
+                full_name = f"{prefix}{base_name} ({int(round(p.pictogram_confidence * 100))}%{extra_sub})"
             full_name = full_name.replace(";", "-")
 
             # Exact Gqrx UI modulation name (WFM (stereo), Narrow FM, AM, USB, LSB, CW-U, Raw I/Q)
