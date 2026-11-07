@@ -14,16 +14,30 @@ Integrates multi-tool demodulation for the AI-Powered Smart Scanner:
 
 import json
 import logging
+import math
 import os
 import shutil
 import subprocess
+import sys
+import tempfile
 import threading
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from core.sdr_arbiter import get_sdr_arbiter
+
 logger = logging.getLogger("DemodEngine")
+
+
+def _check_gnuradio_atsc_available() -> bool:
+    try:
+        import importlib.util
+        return importlib.util.find_spec("gnuradio.dtv") is not None
+    except Exception:
+        return False
 
 
 @dataclass
@@ -46,14 +60,20 @@ class DemodProfile:
 
 def get_installed_demod_tools() -> Dict[str, bool]:
     """Returns dictionary of supported demodulation tools and their availability."""
+    has_mpv = bool(shutil.which("mpv"))
+    has_ffplay = bool(shutil.which("ffplay"))
+    has_gr_dtv = _check_gnuradio_atsc_available()
     return {
         "gqrx": bool(shutil.which("gqrx")),
+        "atsc_tv_rx": bool(has_gr_dtv and (has_mpv or has_ffplay or shutil.which("ffmpeg"))),
         "rtl_433": bool(shutil.which("rtl_433")),
         "multimon_ng": bool(shutil.which("multimon-ng")),
         "direwolf": bool(shutil.which("direwolf")),
         "minimodem": bool(shutil.which("minimodem")),
         "readsb": bool(shutil.which("readsb")),
         "w_scan_cpp": bool(shutil.which("w_scan_cpp")),
+        "mpv": has_mpv,
+        "ffplay": has_ffplay,
         "sox": bool(shutil.which("sox")),
         "ffmpeg": bool(shutil.which("ffmpeg")),
         "hackrf_transfer": bool(shutil.which("hackrf_transfer")),
@@ -117,17 +137,22 @@ def get_demod_profile_for_signal(
     f_mhz = f_hz / 1e6
     installed = get_installed_demod_tools()
 
-    # 1. Aviation ADS-B Mode-S Transponder (1090 MHz)
-    if (1_088_000_000 <= f_hz <= 1_092_000_000) or "ADS-B" in band_name.upper():
+    # 1. Aviation ADS-B Mode-S Transponder (1090 MHz - requires 2.4 MSPS UC8 for readsb)
+    if (1_088_000_000 <= f_hz <= 1_092_000_000) or "ADS-B" in band_name.upper() or "ADS-B" in pic_label.upper():
         is_inst = installed.get("readsb", False) and installed.get("hackrf_transfer", False)
-        cmd = "hackrf_transfer -f 1090000000 -s 2000000 -a 1 -l 32 -g 40 -r - | readsb --device-type=ifile --ifile=- --interactive"
-        term_cmd = f"lxterminal -t 'ADS-B 1090 MHz Live Aviation Transponders' -e bash -c '{cmd}'"
+        cmd = (
+            "hackrf_transfer -f 1090000000 -s 2400000 -a 1 -l 40 -g 48 -r - | "
+            "python3 -c 'import sys,numpy as np;\n"
+            "while b:=sys.stdin.buffer.read(262144): sys.stdout.buffer.write((np.frombuffer(b,np.uint8)^0x80).tobytes())' | "
+            "readsb --device-type=ifile --ifile=- --iformat=UC8 --interactive"
+        )
+        term_cmd = f"lxterminal -t 'ADS-B 1090 MHz Live Aviation Transponders' -e /bin/bash -c \"{cmd}\""
         return DemodProfile(
             tool_id="readsb",
-            tool_name="readsb ADS-B Aviation Decoder",
+            tool_name="readsb 1090 MHz ADS-B Aviation Receiver",
             category="Aviation_Airband",
             demod_label="[✈️ ADS-B TELEMETRY]",
-            description="Decodes Mode-S / ADS-B transponder position, altitude, squawk, and airspeed from aircraft in flight.",
+            description="Decodes live 1090 MHz Mode-S / ADS-B aircraft position, altitude, squawk, and groundspeed onto the Radar Map.",
             command=cmd,
             terminal_command=term_cmd,
             is_installed=is_inst,
@@ -135,24 +160,25 @@ def get_demod_profile_for_signal(
             demod_mode="Raw I/Q",
         )
 
-    # 2. Digital Broadcast Television (ATSC 1.0 / ATSC 3.0)
+    # 2. Digital & Analog Broadcast Television (ATSC 1.0 8VSB + Analog NTSC/ATV via GNU Radio + mpv)
     tv_info = identify_atsc_tv_channel(f_hz)
-    if tv_info is not None:
-        ch, center, lo, pilot = tv_info
-        is_inst = installed.get("w_scan_cpp", False)
-        cmd = f"w_scan_cpp -f a -A 1 -c US"
-        term_cmd = (
-            f"lxterminal -t 'ATSC Digital TV Broadcast Ch {ch} ({lo/1e6:.1f}-{(lo+6e6)/1e6:.1f} MHz)' "
-            f"-e bash -c 'echo \"=== ATSC Channel {ch} ===\"; "
-            f"echo \"Band: {lo/1e6:.2f} - {(lo+6e6)/1e6:.2f} MHz (Pilot Carrier: {pilot/1e6:.4f} MHz)\"; "
-            f"echo \"Scanning DTV channels...\"; {cmd}; read -p \"Press Enter to close...\"'"
-        )
+    if tv_info is not None or profile_category == "Broadcast_TV":
+        if tv_info is not None:
+            ch, center, lo, pilot = tv_info
+        else:
+            ch, center, lo, pilot = 25, f_hz, f_hz - 3_000_000.0, f_hz - 3_000_000.0 + 309_441.0
+        is_inst = installed.get("atsc_tv_rx", False) or installed.get("gqrx", False)
+        cmd = f"{sys.executable} -m core.tv_demodulator --freq {int(center)} --channel {ch}"
+        term_cmd = f"lxterminal -t 'Broadcast TV Ch {ch} ({center / 1e6:.1f} MHz)' -e {cmd}"
         return DemodProfile(
-            tool_id="w_scan_cpp",
-            tool_name="w_scan_cpp ATSC TV Scanner",
+            tool_id="atsc_tv_rx",
+            tool_name="GNU Radio ATSC 8VSB + Analog TV Receiver",
             category="Broadcast_TV",
             demod_label=f"[📺 BROADCAST TV (Ch {ch})]",
-            description=f"North American ATSC Digital Broadcast Television Channel {ch} (6 MHz 8VSB/OFDM multiplex; pilot @ {pilot/1e6:.3f} MHz).",
+            description=(
+                f"Broadcast Television Channel {ch} ({lo / 1e6:.1f}-{(lo + 6e6) / 1e6:.1f} MHz, "
+                f"8VSB pilot @ {pilot / 1e6:.4f} MHz). Live GNU Radio ATSC MPEG-TS video/audio + spectrum & analog raster."
+            ),
             command=cmd,
             terminal_command=term_cmd,
             is_installed=is_inst,
@@ -212,9 +238,32 @@ def get_demod_profile_for_signal(
             demod_mode="Narrow FM",
         )
 
-    # 5. Pager / POCSAG / FLEX Dispatch Channels
-    if any(k in band_name.upper() for k in ("PAGER", "POCSAG", "FLEX")) or (
-        profile_category == "Public_Safety" and any(k in service_type.upper() for k in ("PAGER", "DISPATCH DATA"))
+    # 5. Commercial FM Broadcast Radio (87.5 - 108.0 MHz, OIRT 65.8 - 74.0 MHz) - Checked BEFORE Pager!
+    if (87_500_000 <= f_hz <= 108_100_000) or (65_800_000 <= f_hz <= 74_000_000) or ("WFM" in demod and obw_hz >= 75_000):
+        is_inst = installed.get("gqrx", False)
+        return DemodProfile(
+            tool_id="gqrx",
+            tool_name="Gqrx 2.17.6 SDR Receiver",
+            category="Voice_Broadcast",
+            demod_label="[📻 VOICE BROADCAST]",
+            description=f"Commercial Wideband FM stereo broadcast with RDS subcarrier on {f_mhz:.2f} MHz.",
+            command="gqrx",
+            terminal_command="",
+            is_installed=is_inst,
+            atsc_channel=None,
+            demod_mode="WFM (stereo)",
+        )
+
+    # 6. Pager / POCSAG / FLEX Dispatch Channels (Strictly VHF/UHF/900MHz Paging Allocations >= 138 MHz)
+    pocsag_spot_freqs = (
+        152_007_500, 152_180_000, 157_740_000, 158_100_000,
+        158_700_000, 454_025_000, 454_100_000, 459_000_000,
+    )
+    if f_hz >= 138_000_000 and (
+        any(abs(f_hz - pf) <= 6_000 for pf in pocsag_spot_freqs)
+        or any(k in band_name.upper() for k in ("PAGER", "POCSAG", "FLEX"))
+        or pic_label.upper().startswith("PAGER-")
+        or (profile_category == "Public_Safety" and any(k in service_type.upper() for k in ("PAGER", "DISPATCH DATA")))
     ):
         is_inst = installed.get("multimon_ng", False)
         cmd = "multimon-ng -a POCSAG512 -a POCSAG1200 -a POCSAG2400 -a FLEX -f auto"
@@ -228,28 +277,12 @@ def get_demod_profile_for_signal(
             tool_name="multimon-ng Pager / Data Decoder",
             category="Public_Safety",
             demod_label="[📟 POCSAG / PAGER DATA]",
-            description=f"Decodes POCSAG 512/1200/2400 and Motorola FLEX alphanumeric pager broadcasts.",
+            description="Decodes POCSAG 512/1200/2400 and Motorola FLEX alphanumeric pager broadcasts.",
             command=cmd,
             terminal_command=term_cmd,
             is_installed=is_inst,
             atsc_channel=None,
             demod_mode="Narrow FM",
-        )
-
-    # 6. Commercial FM Broadcast Radio (87.5 - 108.0 MHz)
-    if (87_500_000 <= f_hz <= 108_100_000) or ("WFM" in demod and obw_hz >= 75_000):
-        is_inst = installed.get("gqrx", False)
-        return DemodProfile(
-            tool_id="gqrx",
-            tool_name="Gqrx 2.17.6 SDR Receiver",
-            category="Voice_Broadcast",
-            demod_label="[📻 VOICE BROADCAST]",
-            description=f"Commercial Wideband FM stereo broadcast with RDS subcarrier on {f_mhz:.2f} MHz.",
-            command=f"gqrx",
-            terminal_command="",
-            is_installed=is_inst,
-            atsc_channel=None,
-            demod_mode="WFM (stereo)",
         )
 
     # 7. NOAA All-Hazards Emergency Weather Radio (162.400 - 162.550 MHz)
@@ -337,6 +370,20 @@ def run_telemetry_decode(
     packets: List[Dict[str, Any]] = []
     raw_lines: List[str] = []
 
+    arbiter = get_sdr_arbiter()
+    ok_sdr, sdr_msg = arbiter.prepare_for_aux_receiver(
+        "TELEM_DECODE", f"rtl_433 @ {f_hz / 1e6:.3f} MHz"
+    )
+    if not ok_sdr:
+        return {
+            "success": False,
+            "freq_hz": f_hz,
+            "count": 0,
+            "packets": [],
+            "raw_lines": [],
+            "error": sdr_msg,
+        }
+
     try:
         proc = subprocess.run(
             cmd,
@@ -397,57 +444,110 @@ def run_telemetry_decode(
             "raw_lines": [],
             "error": str(exc),
         }
+    finally:
+        arbiter.release_aux_receiver("TELEM_DECODE")
 
 
 def launch_in_gui_terminal(command_str: str, window_title: str = "Smart Scanner Demod") -> bool:
     """
     Launches an interactive command inside a standalone desktop terminal window
-    (lxterminal or x-terminal-emulator).
+    (lxterminal or x-terminal-emulator) via an atomic temporary bash runner script
+    so nested quotes, pipes, and parentheses never break terminal argument parsing.
     """
     term_bin = shutil.which("lxterminal") or shutil.which("x-terminal-emulator")
     if not term_bin:
         logger.error("No terminal emulator found (lxterminal / x-terminal-emulator)")
         return False
 
-    shell_cmd = f"{command_str}; echo; read -p 'Press Enter to finish and close...'"
-    args = [term_bin, "-t", window_title, "-e", f"bash -c \"{shell_cmd}\""]
-
     try:
-        subprocess.Popen(args, start_new_session=True)
+        runner_path = Path("/tmp/picto_term_runner.sh")
+        safe_title = window_title.replace('"', "").replace("'", "")
+        script_body = (
+            "#!/usr/bin/env bash\n"
+            f'echo "=== {safe_title} ==="\n'
+            f"{command_str}\n"
+            "echo\n"
+            'read -r -p "Press Enter to finish and close..." _\n'
+        )
+        runner_path.write_text(script_body, encoding="utf-8")
+        os.chmod(runner_path, 0o755)
+
+        env = os.environ.copy()
+        env.setdefault("DISPLAY", ":0")
+        env.setdefault("WAYLAND_DISPLAY", "wayland-0")
+        env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+
+        args = [term_bin, "-t", safe_title, "-e", "/bin/bash", str(runner_path)]
+        subprocess.Popen(args, env=env, start_new_session=True)
         return True
     except Exception as exc:
-        logger.error(f"Failed to launch terminal demodulator: {exc}")
+        logger.error("Failed to launch terminal demodulator: %s", exc)
         return False
 
 
-def fm_demodulate_iq_to_pcm(raw_iq_bytes: bytes, in_rate: int = 2_000_000, out_rate: int = 22_050) -> bytes:
+def fm_demodulate_iq_to_pcm(
+    raw_iq_bytes: bytes,
+    in_rate: int = 2_000_000,
+    out_rate: int = 22_050,
+    lo_offset_hz: float = 0.0,
+) -> bytes:
     """
-    Discriminator-based FM demodulation of interleaved 8-bit signed IQ bytes (I, Q, I, Q)
-    decimated down to 16-bit mono PCM suitable for audio decoders (multimon-ng, direwolf).
+    Channel-filtered FM demodulator for interleaved 8-bit signed IQ bytes (I, Q, I, Q):
+      1. Subtracts complex DC offset (eliminating HackRF 0 Hz LO spike)
+      2. Mixes down optional LO offset (e.g. +250 kHz) to baseband
+      3. Channel-filters & decimates complex IQ to ~48 kSPS BEFORE the nonlinear
+         phase discriminator (preventing out-of-band noise from capturing FM threshold!)
+      4. Runs quadrature phase-difference FM discriminator & removes residual carrier DC
+      5. Linearly resamples to exact out_rate (e.g. 22,050 Hz) 16-bit mono PCM for
+         zero baud-clock drift in multimon-ng / direwolf!
     """
     samples = np.frombuffer(raw_iq_bytes, dtype=np.int8).astype(np.float32)
-    if len(samples) < 8:
+    if len(samples) < 16:
         return b""
 
     n = (len(samples) // 2) * 2
-    i = samples[:n:2]
-    q = samples[1:n:2]
-    iq = i + 1j * q
+    iq = (samples[:n:2] + 1j * samples[1:n:2]) / 128.0
+    iq = iq - np.mean(iq)
 
-    # Phase difference FM discriminator
-    dphi = np.angle(iq[1:] * np.conj(iq[:-1]))
+    if abs(lo_offset_hz) > 1.0 and in_rate > 0:
+        t_idx = np.arange(len(iq), dtype=np.float32)
+        osc = np.exp(-1j * (2.0 * math.pi * float(lo_offset_hz) / float(in_rate)) * t_idx)
+        iq = iq * osc
 
-    # Decimate down to out_rate
-    decim = max(1, int(round(in_rate / out_rate)))
-    if decim > 1:
-        pad = (len(dphi) // decim) * decim
-        audio = np.mean(dphi[:pad].reshape(-1, decim), axis=1)
+    # Step 1: Decimate complex IQ to ~48 kSPS narrowband channel BEFORE FM discriminator!
+    target_chan_rate = max(out_rate * 2, 48_000)
+    iq_decim = max(1, int(in_rate // target_chan_rate))
+    if iq_decim > 1 and len(iq) >= iq_decim * 8:
+        pad = (len(iq) // iq_decim) * iq_decim
+        z = np.mean(iq[:pad].reshape(-1, iq_decim), axis=1)
+        chan_rate = float(in_rate) / float(iq_decim)
+        # 7-tap Hann low-pass filter (~12.5 kHz passband) on complex baseband
+        if len(z) >= 12:
+            taps = np.array([0.04, 0.12, 0.22, 0.24, 0.22, 0.12, 0.04], dtype=np.float32)
+            z = np.convolve(z.real, taps, mode="same") + 1j * np.convolve(z.imag, taps, mode="same")
+    else:
+        z = iq
+        chan_rate = float(in_rate)
+
+    if len(z) < 4:
+        return b""
+
+    # Step 2: Quadrature phase-difference FM discriminator
+    dphi = np.angle(z[1:] * np.conj(z[:-1])).astype(np.float32)
+    dphi = dphi - float(np.median(dphi))
+
+    # Step 3: Exact fractional resampling from chan_rate -> out_rate
+    if abs(chan_rate - float(out_rate)) > 1.0 and len(dphi) >= 4:
+        out_len = max(2, int(round(len(dphi) * float(out_rate) / chan_rate)))
+        x_old = np.linspace(0.0, 1.0, len(dphi), dtype=np.float32)
+        x_new = np.linspace(0.0, 1.0, out_len, dtype=np.float32)
+        audio = np.interp(x_new, x_old, dphi).astype(np.float32)
     else:
         audio = dphi
 
     # Normalize audio dynamic range to int16
     peak = float(np.percentile(np.abs(audio), 99)) if len(audio) > 0 else 1.0
-    scale = 16000.0 / max(1e-4, peak)
+    scale = 18000.0 / max(1e-4, peak)
     audio_int16 = np.clip(audio * scale, -32767, 32767).astype(np.int16)
     return audio_int16.tobytes()
 
@@ -458,12 +558,17 @@ def run_pager_data_decode(
     sample_rate_hz: int = 2_000_000,
 ) -> Dict[str, Any]:
     """
-    Captures live RF IQ from HackRF One, FM-demodulates in real time, and pipes into
-    multimon-ng to decode POCSAG 512/1200/2400, Motorola FLEX, and EAS emergency alerts.
+    Captures live RF IQ from HackRF One with +250 kHz DC-avoidance LO offset,
+    channel-filters & FM-demodulates, and pipes into multimon-ng to decode
+    POCSAG 512/1200/2400, Motorola FLEX, and EAS emergency alerts.
     """
     f_hz = int(freq_hz)
+    lo_offset = 250_000
+    lo_hz = max(1_000_000, f_hz - lo_offset)
+    eff_offset = float(f_hz - lo_hz)
     dur = max(1.0, min(10.0, float(duration_sec)))
-    n_samples = int(dur * sample_rate_hz * 2)  # 2 bytes per complex sample
+    # hackrf_transfer -n takes number of complex samples (2 bytes each)
+    n_samples = int(dur * sample_rate_hz)
 
     if not shutil.which("hackrf_transfer") or not shutil.which("multimon-ng"):
         return {
@@ -475,10 +580,24 @@ def run_pager_data_decode(
             "error": "hackrf_transfer or multimon-ng binary not installed",
         }
 
+    arbiter = get_sdr_arbiter()
+    ok_sdr, sdr_msg = arbiter.prepare_for_aux_receiver(
+        "TELEM_DECODE", f"POCSAG/FLEX @ {f_hz / 1e6:.4f} MHz"
+    )
+    if not ok_sdr:
+        return {
+            "success": False,
+            "freq_hz": f_hz,
+            "count": 0,
+            "messages": [],
+            "raw_lines": [],
+            "error": sdr_msg,
+        }
+
     cmd_hackrf = [
         "hackrf_transfer",
         "-r", "-",
-        "-f", str(f_hz),
+        "-f", str(lo_hz),
         "-s", str(sample_rate_hz),
         "-n", str(n_samples),
         "-a", "1",
@@ -491,7 +610,7 @@ def run_pager_data_decode(
             cmd_hackrf,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=dur + 4.0,
+            timeout=dur + 4.5,
         )
         iq_bytes = proc_hrf.stdout or b""
         if len(iq_bytes) < 4096:
@@ -504,7 +623,9 @@ def run_pager_data_decode(
                 "error": f"HackRF capture returned short data ({len(iq_bytes)} bytes)",
             }
 
-        pcm_bytes = fm_demodulate_iq_to_pcm(iq_bytes, in_rate=sample_rate_hz, out_rate=22_050)
+        pcm_bytes = fm_demodulate_iq_to_pcm(
+            iq_bytes, in_rate=sample_rate_hz, out_rate=22_050, lo_offset_hz=eff_offset
+        )
 
         cmd_multi = [
             "multimon-ng",
@@ -561,6 +682,8 @@ def run_pager_data_decode(
             "raw_lines": [],
             "error": str(exc),
         }
+    finally:
+        arbiter.release_aux_receiver("TELEM_DECODE")
 
 
 def run_aprs_data_decode(
@@ -569,12 +692,15 @@ def run_aprs_data_decode(
     sample_rate_hz: int = 2_000_000,
 ) -> Dict[str, Any]:
     """
-    Captures live RF IQ from HackRF One at 144.390 MHz (or specified frequency),
-    FM-demodulates, and decodes AX.25 tactical packet radio telemetry via multimon-ng or direwolf.
+    Captures live RF IQ from HackRF One at 144.390 MHz with +250 kHz LO offset,
+    channel-filters & FM-demodulates, and decodes AX.25 APRS packets via multimon-ng.
     """
     f_hz = int(freq_hz)
+    lo_offset = 250_000
+    lo_hz = max(1_000_000, f_hz - lo_offset)
+    eff_offset = float(f_hz - lo_hz)
     dur = max(1.0, min(10.0, float(duration_sec)))
-    n_samples = int(dur * sample_rate_hz * 2)
+    n_samples = int(dur * sample_rate_hz)
 
     if not shutil.which("hackrf_transfer") or not shutil.which("multimon-ng"):
         return {
@@ -586,19 +712,33 @@ def run_aprs_data_decode(
             "error": "hackrf_transfer or multimon-ng binary not installed",
         }
 
+    arbiter = get_sdr_arbiter()
+    ok_sdr, sdr_msg = arbiter.prepare_for_aux_receiver(
+        "TELEM_DECODE", f"APRS 1200 @ {f_hz / 1e6:.3f} MHz"
+    )
+    if not ok_sdr:
+        return {
+            "success": False,
+            "freq_hz": f_hz,
+            "count": 0,
+            "packets": [],
+            "raw_lines": [],
+            "error": sdr_msg,
+        }
+
     cmd_hackrf = [
         "hackrf_transfer",
         "-r", "-",
-        "-f", str(f_hz),
+        "-f", str(lo_hz),
         "-s", str(sample_rate_hz),
         "-n", str(n_samples),
         "-a", "1",
-        "-l", "24",
-        "-g", "32",
+        "-l", "32",
+        "-g", "34",
     ]
 
     try:
-        proc_hrf = subprocess.run(cmd_hackrf, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=dur + 4.0)
+        proc_hrf = subprocess.run(cmd_hackrf, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=dur + 4.5)
         iq_bytes = proc_hrf.stdout or b""
         if len(iq_bytes) < 4096:
             return {
@@ -610,7 +750,9 @@ def run_aprs_data_decode(
                 "error": "HackRF capture returned short data",
             }
 
-        pcm_bytes = fm_demodulate_iq_to_pcm(iq_bytes, in_rate=sample_rate_hz, out_rate=22_050)
+        pcm_bytes = fm_demodulate_iq_to_pcm(
+            iq_bytes, in_rate=sample_rate_hz, out_rate=22_050, lo_offset_hz=eff_offset
+        )
 
         cmd_multi = ["multimon-ng", "-t", "raw", "-a", "AFSK1200", "-A", "-"]
         proc_multi = subprocess.run(cmd_multi, input=pcm_bytes, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5.0)
@@ -643,15 +785,17 @@ def run_aprs_data_decode(
             "raw_lines": [],
             "error": str(exc),
         }
+    finally:
+        arbiter.release_aux_receiver("TELEM_DECODE")
 
 
-def run_atsc_tv_analysis(freq_hz: float) -> Dict[str, Any]:
+def run_atsc_tv_analysis(freq_hz: float, measure_live: bool = False) -> Dict[str, Any]:
     """
-    Performs physical-layer ATSC 1.0 / ATSC 3.0 digital broadcast TV analysis
+    Performs physical-layer ATSC 1.0 / ATSC 3.0 & Analog TV broadcast analysis
     for a given carrier frequency:
-      - Maps to ATSC terrestrial channel number (2 - 36)
-      - Computes 6.000 MHz channel boundaries and exact 8VSB pilot carrier frequency (+309.4 kHz)
-      - Generates automated scanner command (w_scan_cpp) and Gqrx raw IQ visual pandapter settings.
+      - Maps to North American terrestrial channel number (2 - 36)
+      - Computes 6.000 MHz channel boundaries and exact 8VSB pilot carrier (+309.441 kHz)
+      - Optionally captures live 8.0 MSPS HackRF spectrum to measure real channel power & pilot lock!
     """
     f_hz = float(freq_hz)
     tv_info = identify_atsc_tv_channel(f_hz)
@@ -668,7 +812,7 @@ def run_atsc_tv_analysis(freq_hz: float) -> Dict[str, Any]:
     hi = lo + 6_000_000.0
     offset_from_pilot = f_hz - pilot
 
-    return {
+    info: Dict[str, Any] = {
         "is_atsc_tv": True,
         "channel": ch,
         "band_name": f"ATSC Digital Television Channel {ch}",
@@ -679,15 +823,26 @@ def run_atsc_tv_analysis(freq_hz: float) -> Dict[str, Any]:
         "offset_from_pilot_khz": round(offset_from_pilot / 1000.0, 1),
         "modulation": "8VSB (ATSC 1.0) / OFDM (ATSC 3.0)",
         "bandwidth_mhz": 6.0,
-        "scanner_tool": "w_scan_cpp",
-        "scanner_command": "w_scan_cpp -f a -A 1 -c US",
+        "scanner_tool": "atsc_tv_rx",
+        "dvb_scanner_tool": "w_scan_cpp",
+        "scanner_command": f"{sys.executable} -m core.tv_demodulator --freq {int(center)} --channel {ch}",
         "gqrx_pandapter_settings": {
             "mode": "Raw I/Q",
-            "sample_rate_hz": 6_000_000,
+            "sample_rate_hz": 8_000_000,
             "center_freq_hz": int(center),
             "filter_bw_hz": 6_000_000,
         },
     }
+
+    if measure_live:
+        try:
+            from core.tv_demodulator import measure_tv_channel_rf_snapshot
+            snap = measure_tv_channel_rf_snapshot(center_freq_hz=center)
+            info["live_rf"] = snap
+        except Exception as exc:
+            info["live_rf"] = {"measured": False, "error": str(exc)}
+
+    return info
 
 
 def demodulate_signal(
@@ -761,7 +916,7 @@ def demodulate_signal(
         return result
 
     # 4. Digital Broadcast Television
-    if prof.tool_id == "w_scan_cpp" or prof.category == "Broadcast_TV":
+    if prof.tool_id in ("atsc_tv_rx", "w_scan_cpp") or prof.category == "Broadcast_TV":
         tv_data = run_atsc_tv_analysis(freq_hz)
         result["demod_data"] = {
             "type": "BROADCAST_TV",

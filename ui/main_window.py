@@ -58,7 +58,11 @@ from core.bandplans import (
     classify_voice_broadcast,
     evaluate_signal_demod_feasibility,
 )
-from core.demod_engine import launch_in_gui_terminal
+from core.demod_engine import (
+    get_demod_profile_for_signal,
+    identify_atsc_tv_channel,
+    launch_in_gui_terminal,
+)
 from core.gps_engine import get_gps_manager
 from core.gqrx_controller import GqrxController
 from core.hackrf_engine import ScanConfig
@@ -69,8 +73,10 @@ from core.profile_organizer import (
 )
 from core.scanner_pipeline import MultiLayerScannerPipeline, ScanProgressUpdate
 from core.sdr_arbiter import get_sdr_arbiter
+from core.tv_demodulator import get_tv_controller
 from ui.map_widget import TacticalRadarTelemetryWidget
 from ui.styles import build_theme_qss
+from ui.tv_dialog import BroadcastTVReceiverDialog
 from ui.widgets import (
     DualLayerProgressBar,
     LiveSpectrumCanvas,
@@ -158,9 +164,12 @@ class SmartScannerMainWindow(QMainWindow):
         self._hw_poll_inflight: bool = False
         self._anim_phase: float = 0.0
 
-        # Voice broadcast & quick search filter state ("ALL", "VOICE_BROADCAST", "ALL_VOICE")
+        # Voice broadcast & quick search filter state ("ALL", "VOICE_BROADCAST", "ALL_VOICE", "TV_DATA")
         self._signal_filter_mode: str = "ALL"
         self._search_filter_text: str = ""
+        self._loading_ui_settings: bool = False
+        self._ui_settings_path: Path = self.organizer.profiles_dir / "ui_settings.json"
+        self._tv_dialog: Optional[BroadcastTVReceiverDialog] = None
 
         # Layout topology state: "AUTO", "DECK" (800x480 5in touch), "STUDIO" (1080p+ HDMI)
         self._layout_preference: str = "AUTO"
@@ -170,9 +179,10 @@ class SmartScannerMainWindow(QMainWindow):
         self._build_ui()
         self._apply_topology(force=True)
 
-        # Load saved Location Profiles from disk immediately (reboot persistence!)
+        # Load saved Location Profiles & persistent UI preferences from disk immediately (reboot persistence!)
         self._refresh_saved_profiles_table()
         self._load_initial_saved_profile()
+        self._load_ui_settings()
 
         # Smooth 12 FPS animation timer for graphical pulses & progress indicators
         self._anim_timer = QTimer(self)
@@ -345,6 +355,7 @@ class SmartScannerMainWindow(QMainWindow):
         self.panel_profiles = self._build_profiles_panel()
         self.panel_map = TacticalRadarTelemetryWidget(self)
         self.panel_map.tune_requested.connect(self._on_map_tune_requested)
+        self.panel_map.tv_demod_requested.connect(self.open_broadcast_tv_dialog)
 
         # 4. DECK NAVIGATION BAR (Visible in 5" 800x480 Touch Deck Mode)
         self.deck_nav_widget = QWidget(self)
@@ -355,10 +366,10 @@ class SmartScannerMainWindow(QMainWindow):
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
         self.btn_tab_ctrl = QPushButton("⚙ 1. SCAN", self)
-        self.btn_tab_vis = QPushButton("∿ 2. RF & AI", self)
+        self.btn_tab_vis = QPushButton("∿ 2. RF && AI", self)
         self.btn_tab_sigs = QPushButton("◉ 3. SIGNALS (0)", self)
         self.btn_tab_prof = QPushButton("★ 4. PROFILES (0)", self)
-        self.btn_tab_map = QPushButton("🗺 5. RADAR/MAP", self)
+        self.btn_tab_map = QPushButton("🗺 5. RADAR/TV", self)
 
         for idx, btn in enumerate((self.btn_tab_ctrl, self.btn_tab_vis, self.btn_tab_sigs, self.btn_tab_prof, self.btn_tab_map)):
             btn.setObjectName("navTabBtn")
@@ -395,10 +406,21 @@ class SmartScannerMainWindow(QMainWindow):
 
         # --- Section A: Highlighted Scan Mode Selector (QUICK / DEEP / CUSTOM) ---
         mode_hdr = QHBoxLayout()
-        lbl_m = QLabel("SCAN MODE (SAVES PERMANENT LOCATION PROFILE):", container)
+        lbl_m = QLabel("SCAN MODE (SAVES LOCATION PROFILE):", container)
         lbl_m.setObjectName("sectionHeader")
         mode_hdr.addWidget(lbl_m)
         mode_hdr.addStretch()
+
+        self.btn_quick_tv = QPushButton("📺 Live TV", container)
+        self.btn_quick_tv.setToolTip("Open Broadcast TV Demodulator (ATSC 8VSB Video/Audio + NTSC Raster + Pilot)")
+        self.btn_quick_tv.setStyleSheet(
+            "QPushButton { background-color: #2e1065; border: 1px solid #a78bfa; color: #ede9fe; "
+            "font-weight: 800; padding: 2px 7px; border-radius: 4px; }"
+            "QPushButton:hover { background-color: #4c1d95; border-color: #c4b5fd; }"
+        )
+        self.btn_quick_tv.clicked.connect(lambda: self.open_broadcast_tv_dialog(539_000_000.0))
+        mode_hdr.addWidget(self.btn_quick_tv)
+
         self.lbl_active_mode_pill = QLabel("MODE: QUICK SCAN", container)
         self.lbl_active_mode_pill.setObjectName("valuePillGreen")
         mode_hdr.addWidget(self.lbl_active_mode_pill)
@@ -446,6 +468,7 @@ class SmartScannerMainWindow(QMainWindow):
         self.spin_min_mhz.setRange(1, 5990)
         self.spin_min_mhz.setValue(88)
         self.spin_min_mhz.setSuffix(" MHz")
+        self.spin_min_mhz.valueChanged.connect(lambda _: self._save_ui_settings())
         b_grid.addWidget(self.spin_min_mhz, 1, 1)
 
         b_grid.addWidget(QLabel("Stop MHz:", band_frame), 1, 2)
@@ -453,6 +476,7 @@ class SmartScannerMainWindow(QMainWindow):
         self.spin_max_mhz.setRange(2, 6000)
         self.spin_max_mhz.setValue(137)
         self.spin_max_mhz.setSuffix(" MHz")
+        self.spin_max_mhz.valueChanged.connect(lambda _: self._save_ui_settings())
         b_grid.addWidget(self.spin_max_mhz, 1, 3)
 
         vbox.addWidget(band_frame)
@@ -528,6 +552,7 @@ class SmartScannerMainWindow(QMainWindow):
         self.spin_l3_frames.setRange(3, 10)
         self.spin_l3_frames.setValue(3)
         self.spin_l3_frames.setToolTip("Minimum 3 spectrogram frames per 1 MHz in Layer 3")
+        self.spin_l3_frames.valueChanged.connect(lambda _: self._save_ui_settings())
         c_hbox.addWidget(self.spin_l3_frames)
 
         c_hbox.addWidget(QLabel("LNA:", self.custom_frame))
@@ -536,6 +561,7 @@ class SmartScannerMainWindow(QMainWindow):
         self.spin_lna.setSingleStep(8)
         self.spin_lna.setValue(24)
         self.spin_lna.setSuffix("dB")
+        self.spin_lna.valueChanged.connect(lambda _: self._save_ui_settings())
         c_hbox.addWidget(self.spin_lna)
 
         c_hbox.addWidget(QLabel("VGA:", self.custom_frame))
@@ -544,13 +570,16 @@ class SmartScannerMainWindow(QMainWindow):
         self.spin_vga.setSingleStep(2)
         self.spin_vga.setValue(22)
         self.spin_vga.setSuffix("dB")
+        self.spin_vga.valueChanged.connect(lambda _: self._save_ui_settings())
         c_hbox.addWidget(self.spin_vga)
 
         self.chk_amp = QCheckBox("+14dB AMP", self.custom_frame)
+        self.chk_amp.toggled.connect(lambda _: self._save_ui_settings())
         c_hbox.addWidget(self.chk_amp)
 
-        self.chk_legal_only = QCheckBox("Legal Demod Only", self.custom_frame)
+        self.chk_legal_only = QCheckBox("Legal Only", self.custom_frame)
         self.chk_legal_only.setChecked(True)
+        self.chk_legal_only.toggled.connect(lambda _: self._save_ui_settings())
         c_hbox.addWidget(self.chk_legal_only)
 
         vbox.addWidget(self.custom_frame)
@@ -604,19 +633,19 @@ class SmartScannerMainWindow(QMainWindow):
 
         vbox.addLayout(top_strip)
 
-        # Voice Broadcast & Signal Type Quick Filter Bar
+        # Voice Broadcast, TV/Data & Signal Type Quick Filter Bar (Zero-Overflow on 800x480 DSI)
         filter_strip = QHBoxLayout()
-        filter_strip.setSpacing(4)
+        filter_strip.setSpacing(3)
         filter_strip.setContentsMargins(0, 0, 0, 0)
 
         lbl_filter = QLabel("FIND:", panel)
-        lbl_filter.setStyleSheet("color: #64748b; font-weight: 800; font-size: 10px; letter-spacing: 0.5px;")
+        lbl_filter.setStyleSheet("color: #64748b; font-weight: 800; font-size: 10px; letter-spacing: 0.4px;")
         filter_strip.addWidget(lbl_filter)
 
         self.filter_btn_group = QButtonGroup(panel)
         self.filter_btn_group.setExclusive(True)
 
-        self.btn_filter_all = QPushButton("🌐 All Signals (0)", panel)
+        self.btn_filter_all = QPushButton("🌐 All (0)", panel)
         self.btn_filter_all.setObjectName("btnFilterPill")
         self.btn_filter_all.setCheckable(True)
         self.btn_filter_all.setChecked(True)
@@ -625,7 +654,7 @@ class SmartScannerMainWindow(QMainWindow):
         self.filter_btn_group.addButton(self.btn_filter_all)
         filter_strip.addWidget(self.btn_filter_all)
 
-        self.btn_filter_voice_bc = QPushButton("📻 Voice Broadcast (0)", panel)
+        self.btn_filter_voice_bc = QPushButton("📻 Broadcast (0)", panel)
         self.btn_filter_voice_bc.setObjectName("btnFilterVoiceBc")
         self.btn_filter_voice_bc.setCheckable(True)
         self.btn_filter_voice_bc.setToolTip(
@@ -635,19 +664,27 @@ class SmartScannerMainWindow(QMainWindow):
         self.filter_btn_group.addButton(self.btn_filter_voice_bc)
         filter_strip.addWidget(self.btn_filter_voice_bc)
 
-        self.btn_filter_any_voice = QPushButton("🗣️ All Voice (0)", panel)
+        self.btn_filter_any_voice = QPushButton("🗣️ Voice (0)", panel)
         self.btn_filter_any_voice.setObjectName("btnFilterPill")
         self.btn_filter_any_voice.setCheckable(True)
-        self.btn_filter_any_voice.setToolTip("Show all voice channels (Broadcast + Civil/Mil Airband ATC + Marine + Two-Way)")
+        self.btn_filter_any_voice.setToolTip("Show all voice channels (Broadcast + Fire/EMS + Sheriff + Aviation + CB + Rail)")
         self.btn_filter_any_voice.clicked.connect(lambda: self._set_signal_filter_mode("ALL_VOICE"))
         self.filter_btn_group.addButton(self.btn_filter_any_voice)
         filter_strip.addWidget(self.btn_filter_any_voice)
 
-        filter_strip.addSpacing(6)
+        self.btn_filter_tv_data = QPushButton("📺 TV/Data (0)", panel)
+        self.btn_filter_tv_data.setObjectName("btnFilterTvData")
+        self.btn_filter_tv_data.setCheckable(True)
+        self.btn_filter_tv_data.setToolTip("Show Broadcast TV (ATSC/NTSC), 1090 MHz ADS-B, POCSAG Pager, APRS & ISM Telemetry")
+        self.btn_filter_tv_data.clicked.connect(lambda: self._set_signal_filter_mode("TV_DATA"))
+        self.filter_btn_group.addButton(self.btn_filter_tv_data)
+        filter_strip.addWidget(self.btn_filter_tv_data)
+
+        filter_strip.addSpacing(4)
 
         self.edit_filter_search = QLineEdit(panel)
         self.edit_filter_search.setObjectName("searchFilterEdit")
-        self.edit_filter_search.setPlaceholderText("🔍 Filter stations, MHz, labels...")
+        self.edit_filter_search.setPlaceholderText("🔍 Station / MHz...")
         self.edit_filter_search.setClearButtonEnabled(True)
         self.edit_filter_search.textChanged.connect(self._on_search_filter_changed)
         filter_strip.addWidget(self.edit_filter_search, 1)
@@ -696,7 +733,7 @@ class SmartScannerMainWindow(QMainWindow):
         vbox.setSpacing(4)
 
         hdr = QHBoxLayout()
-        lbl_p = QLabel("★ PERMANENTLY SAVED LOCATION PROFILES (SURVIVES REBOOTS)", panel)
+        lbl_p = QLabel("★ SAVED LOCATION PROFILES (REBOOT PERSISTENT)", panel)
         lbl_p.setObjectName("sectionHeader")
         hdr.addWidget(lbl_p)
         hdr.addStretch()
@@ -705,7 +742,8 @@ class SmartScannerMainWindow(QMainWindow):
         self.btn_refresh_profiles.clicked.connect(self._refresh_saved_profiles_table)
         hdr.addWidget(self.btn_refresh_profiles)
 
-        self.btn_sync_bookmarks = QPushButton("▲ Sync Bookmarks -> Gqrx", panel)
+        self.btn_sync_bookmarks = QPushButton("▲ Sync Gqrx", panel)
+        self.btn_sync_bookmarks.setToolTip("Export visible signals to ~/.config/gqrx/bookmarks.csv")
         self.btn_sync_bookmarks.clicked.connect(self._sync_current_bookmarks_to_gqrx)
         hdr.addWidget(self.btn_sync_bookmarks)
         vbox.addLayout(hdr)
@@ -741,6 +779,7 @@ class SmartScannerMainWindow(QMainWindow):
         idx = (order.index(self._layout_preference) + 1) % len(order)
         self._layout_preference = order[idx]
         self._apply_topology(force=True)
+        self._save_ui_settings()
 
     def _apply_topology(self, force: bool = False) -> None:
         if self._layout_preference == "DECK":
@@ -880,12 +919,18 @@ class SmartScannerMainWindow(QMainWindow):
             else ""
         )
         self.btn_start_scan.setText(f"▶ START {m} SCAN")
+        self._save_ui_settings()
 
     def _on_preset_changed(self, idx: int) -> None:
         if 0 <= idx < len(self.BAND_PRESETS) - 1:
             _, lo, hi = self.BAND_PRESETS[idx]
+            self.spin_min_mhz.blockSignals(True)
+            self.spin_max_mhz.blockSignals(True)
             self.spin_min_mhz.setValue(lo)
             self.spin_max_mhz.setValue(hi)
+            self.spin_min_mhz.blockSignals(False)
+            self.spin_max_mhz.blockSignals(False)
+        self._save_ui_settings()
 
     def _on_strength_sliders_changed(self) -> None:
         snr_v = float(self.slider_snr.value())
@@ -894,6 +939,7 @@ class SmartScannerMainWindow(QMainWindow):
         self.lbl_peak_pill.setText(f"PEAK >= {peak_v:.0f} dBFS")
         self.spectrum_canvas.set_thresholds(snr_v, peak_v)
         self._apply_viable_filter_and_populate()
+        self._save_ui_settings()
 
     def _on_demod_or_filter_changed(self) -> None:
         demod_txt = self.combo_demod.currentText()
@@ -926,6 +972,7 @@ class SmartScannerMainWindow(QMainWindow):
             p.plot_max = float(feas["pandapter_max_db"])
 
         self._apply_viable_filter_and_populate()
+        self._save_ui_settings()
 
     def _build_current_scan_config(self) -> ScanConfig:
         sq_code = str(self.combo_squelch.currentData() or "OPEN")
@@ -951,6 +998,14 @@ class SmartScannerMainWindow(QMainWindow):
         if self.pipeline.is_scanning() or self._tuning_busy or self._usb_reset_busy:
             return
 
+        # Stop any active auxiliary HackRF streams (Live ADS-B / Broadcast TV) before scanning
+        try:
+            self.panel_map.stop_live_adsb()
+            get_tv_controller().stop()
+        except Exception:
+            pass
+
+        self._save_ui_settings()
         cfg = self._build_current_scan_config()
         self._scan_unlocked = False
         self.btn_start_scan.setEnabled(False)
@@ -1076,7 +1131,10 @@ class SmartScannerMainWindow(QMainWindow):
             self.btn_filter_all.setChecked(mode == "ALL")
             self.btn_filter_voice_bc.setChecked(mode == "VOICE_BROADCAST")
             self.btn_filter_any_voice.setChecked(mode == "ALL_VOICE")
+            if hasattr(self, "btn_filter_tv_data"):
+                self.btn_filter_tv_data.setChecked(mode == "TV_DATA")
         self._apply_viable_filter_and_populate()
+        self._save_ui_settings()
 
     def _on_search_filter_changed(self, text: str) -> None:
         self._search_filter_text = text.strip()
@@ -1091,6 +1149,15 @@ class SmartScannerMainWindow(QMainWindow):
             return
         super().keyPressEvent(event)
 
+    @staticmethod
+    def _is_tv_or_data_profile(p: ClassifiedSignalProfile) -> bool:
+        tool = getattr(p, "demod_tool", "gqrx")
+        if p.profile_category in ("Broadcast_TV", "ISM_Telemetry"):
+            return True
+        if tool in ("atsc_tv_rx", "w_scan_cpp", "readsb", "rtl_433", "multimon_ng", "direwolf"):
+            return True
+        return not getattr(p, "is_any_voice", False)
+
     def _apply_viable_filter_and_populate(self) -> None:
         min_snr = float(self.slider_snr.value())
         min_peak = float(self.slider_peak.value())
@@ -1104,17 +1171,27 @@ class SmartScannerMainWindow(QMainWindow):
         # Calculate live counts across viable signals
         vbc_count = sum(1 for p in viable_candidates if getattr(p, "is_voice_broadcast", False))
         all_v_count = sum(1 for p in viable_candidates if getattr(p, "is_any_voice", False))
+        tv_data_count = sum(1 for p in viable_candidates if self._is_tv_or_data_profile(p))
 
         if hasattr(self, "btn_filter_all"):
-            self.btn_filter_all.setText(f"🌐 All Signals ({len(viable_candidates)})")
-            self.btn_filter_voice_bc.setText(f"📻 Voice Broadcast ({vbc_count})")
-            self.btn_filter_any_voice.setText(f"🗣️ All Voice ({all_v_count})")
+            if self._is_compact_mode:
+                self.btn_filter_all.setText(f"🌐 All ({len(viable_candidates)})")
+                self.btn_filter_voice_bc.setText(f"📻 Broadcast ({vbc_count})")
+                self.btn_filter_any_voice.setText(f"🗣️ Voice ({all_v_count})")
+            else:
+                self.btn_filter_all.setText(f"🌐 All Signals ({len(viable_candidates)})")
+                self.btn_filter_voice_bc.setText(f"📻 Voice Broadcast ({vbc_count})")
+                self.btn_filter_any_voice.setText(f"🗣️ All Voice ({all_v_count})")
+            if hasattr(self, "btn_filter_tv_data"):
+                self.btn_filter_tv_data.setText(f"📺 TV/Data ({tv_data_count})")
 
         # Apply active filter mode
         if self._signal_filter_mode == "VOICE_BROADCAST":
             candidates = [p for p in viable_candidates if getattr(p, "is_voice_broadcast", False)]
         elif self._signal_filter_mode == "ALL_VOICE":
             candidates = [p for p in viable_candidates if getattr(p, "is_any_voice", False)]
+        elif self._signal_filter_mode == "TV_DATA":
+            candidates = [p for p in viable_candidates if self._is_tv_or_data_profile(p)]
         else:
             candidates = list(viable_candidates)
 
@@ -1148,12 +1225,28 @@ class SmartScannerMainWindow(QMainWindow):
         for row, p in enumerate(self.filtered_profiles):
             is_vbc = getattr(p, "is_voice_broadcast", False)
             is_any_v = getattr(p, "is_any_voice", False)
+            tool = getattr(p, "demod_tool", "gqrx")
+            is_tv = (p.profile_category == "Broadcast_TV") or (tool in ("atsc_tv_rx", "w_scan_cpp"))
+            is_adsb = (tool == "readsb") or (1_088_000_000 <= p.frequency_hz <= 1_092_000_000)
 
-            # Col 0: Exact Frequency (numerically ordered with voice icon)
-            f_prefix = "📻 " if is_vbc else ("🗣️ " if is_any_v else "")
+            # Col 0: Exact Frequency (numerically ordered with service icon)
+            if is_tv:
+                f_prefix = "📺 "
+            elif is_adsb:
+                f_prefix = "✈️ "
+            elif is_vbc:
+                f_prefix = "📻 "
+            elif is_any_v:
+                f_prefix = "🗣️ "
+            else:
+                f_prefix = ""
             f_item = QTableWidgetItem(f"{f_prefix}{p.frequency_mhz:8.4f} MHz")
             f_item.setFont(QFont("Monospace", 10, QFont.Weight.Bold))
-            if is_vbc:
+            if is_tv:
+                f_item.setForeground(QColor("#c4b5fd"))  # Lavender/Purple for Broadcast TV
+            elif is_adsb:
+                f_item.setForeground(QColor("#fbbf24"))  # Amber for 1090 MHz ADS-B
+            elif is_vbc:
                 f_item.setForeground(QColor("#10b981"))  # Emerald Green for Voice Broadcast!
             elif is_any_v:
                 f_item.setForeground(QColor("#38bdf8"))  # Sky Blue for Two-Way Voice
@@ -1209,6 +1302,7 @@ class SmartScannerMainWindow(QMainWindow):
             cat_item = QTableWidgetItem(cat_display)
             cat_colors = {
                 "Broadcast_Audio": "#34d399",
+                "Broadcast_TV": "#c4b5fd",
                 "Voice_Broadcast": "#10b981",
                 "Aviation_Airband": "#fbbf24",
                 "Emergency_Weather": "#f87171",
@@ -1235,17 +1329,18 @@ class SmartScannerMainWindow(QMainWindow):
             self.table_signals.setItem(row, 8, wf_item)
 
             # Col 9: Clickable Action Button (unparented before setCellWidget so viewport owns it)
-            tool = getattr(p, "demod_tool", "gqrx")
-            if p.is_voice_broadcast:
+            if is_tv:
+                btn_text = "📺 WATCH TV"
+            elif is_adsb:
+                btn_text = "✈️ LIVE ADS-B"
+            elif p.is_voice_broadcast:
                 btn_text = "📻 TUNE GQRX"
             elif tool == "rtl_433":
                 btn_text = "📊 DEMOD 433"
-            elif tool == "w_scan_cpp":
-                btn_text = "📺 ATSC SCAN"
-            elif tool == "readsb":
-                btn_text = "✈️ ADS-B"
             elif tool == "multimon_ng":
                 btn_text = "📟 PAGER"
+            elif tool == "direwolf":
+                btn_text = "📍 APRS"
             else:
                 btn_text = "▶ TUNE GQRX"
 
@@ -1263,7 +1358,7 @@ class SmartScannerMainWindow(QMainWindow):
             loc_short = self.active_saved_profile.locality_name.split(",")[0]
             if self._signal_filter_mode == "VOICE_BROADCAST":
                 self.lbl_lock_banner.setText(
-                    f"✔ FILTER: [📻 Voice Broadcast] — Showing {shown_n} broadcast stations (out of {len(viable_candidates)} viable). Tap ▶ TUNE GQRX for live audio!"
+                    f"✔ FILTER [📻 Broadcast] — {shown_n}/{len(viable_candidates)} viable stations. Tap 📻 TUNE GQRX for live audio!"
                 )
                 self.lbl_lock_banner.setStyleSheet(
                     "background-color: #052e16; border: 1px solid #10b981; border-radius: 4px; "
@@ -1271,15 +1366,23 @@ class SmartScannerMainWindow(QMainWindow):
                 )
             elif self._signal_filter_mode == "ALL_VOICE":
                 self.lbl_lock_banner.setText(
-                    f"✔ FILTER: [🗣️ All Voice] — Showing {shown_n} voice channels (out of {len(viable_candidates)} viable). Tap ▶ TUNE GQRX for live audio!"
+                    f"✔ FILTER [🗣️ Voice] — {shown_n}/{len(viable_candidates)} voice channels. Tap ▶ TUNE GQRX for live audio!"
                 )
                 self.lbl_lock_banner.setStyleSheet(
                     "background-color: #082f49; border: 1px solid #0284c7; border-radius: 4px; "
                     "color: #38bdf8; padding: 4px 8px; font-weight: bold;"
                 )
+            elif self._signal_filter_mode == "TV_DATA":
+                self.lbl_lock_banner.setText(
+                    f"✔ FILTER [📺 TV/Data] — {shown_n}/{len(viable_candidates)} TV/ADS-B/Telemetry signals ready!"
+                )
+                self.lbl_lock_banner.setStyleSheet(
+                    "background-color: #2e1065; border: 1px solid #a78bfa; border-radius: 4px; "
+                    "color: #ede9fe; padding: 4px 8px; font-weight: bold;"
+                )
             else:
                 self.lbl_lock_banner.setText(
-                    f"✔ UNLOCKED [{loc_short} • {dt_tag}] — {shown_n} viable signals ready. Tap ▶ TUNE GQRX for live audio!"
+                    f"✔ UNLOCKED [{loc_short} • {dt_tag}] — {shown_n} viable signals ready for Audio / TV / Radar!"
                 )
                 self.lbl_lock_banner.setStyleSheet(
                     "background-color: #062e1e; border: 1px solid #10b981; border-radius: 4px; "
@@ -1315,18 +1418,29 @@ class SmartScannerMainWindow(QMainWindow):
             return
         p = self.filtered_profiles[row]
         tool = getattr(p, "demod_tool", "gqrx")
+        is_tv = (p.profile_category == "Broadcast_TV") or (tool in ("atsc_tv_rx", "w_scan_cpp"))
         menu = QMenu(self)
-        act_gqrx = menu.addAction(f"📻 Tune in Gqrx SDR ({p.modulation})")
+        act_tv = None
+        if is_tv:
+            act_tv = menu.addAction(f"📺 Watch Broadcast TV Receiver ({p.frequency_mhz:.3f} MHz)")
+            act_gqrx = menu.addAction("📻 Open 6 MHz TV Spectrum in Wideband Gqrx (8 MSPS)")
+        else:
+            act_gqrx = menu.addAction(f"📻 Tune in Gqrx SDR ({p.modulation})")
         act_tool = None
-        if tool != "gqrx":
-            act_tool = menu.addAction(f"🚀 Launch Dedicated Decoder ({tool}) in Terminal")
+        if tool not in ("gqrx", "atsc_tv_rx"):
+            act_tool = menu.addAction(f"🚀 Launch Dedicated Decoder ({tool})")
         menu.addSeparator()
         act_copy_f = menu.addAction(f"📋 Copy Frequency ({p.frequency_mhz:.4f} MHz)")
         act_copy_cmd = menu.addAction("📋 Copy Demod Command")
 
         action = menu.exec(self.table_signals.viewport().mapToGlobal(pos))
-        if action == act_gqrx:
-            self.tune_signal_in_gqrx(p)
+        if action == act_tv and act_tv is not None:
+            self.open_broadcast_tv_dialog(float(p.frequency_hz))
+        elif action == act_gqrx:
+            if is_tv:
+                self._open_tv_channel_in_wideband_gqrx(float(p.frequency_hz))
+            else:
+                self.tune_signal_in_gqrx(p)
         elif action == act_tool and act_tool is not None:
             self.handle_signal_demod_action(p)
         elif action == act_copy_f:
@@ -1339,8 +1453,123 @@ class SmartScannerMainWindow(QMainWindow):
                 cmd = getattr(p, "demod_cmd", "") or "gqrx"
                 cb.setText(cmd)
 
+    def _open_tv_channel_in_wideband_gqrx(self, freq_hz: float) -> None:
+        """Opens a 6 MHz ATSC Broadcast TV channel in Gqrx using the 8.0 MSPS TV_WIDE sampling tier."""
+        tv_info = identify_atsc_tv_channel(int(round(freq_hz)))
+        center_hz = int(round(tv_info[1])) if tv_info is not None else int(round(freq_hz))
+        ch_label = f"ATSC Ch {tv_info[0]}" if tv_info is not None else "Broadcast TV"
+        feas = evaluate_signal_demod_feasibility(
+            freq_hz=center_hz,
+            snr_db=22.0,
+            measured_bw_hz=5_380_000.0,
+            demod_override="Raw I/Q",
+        )
+        prof = ClassifiedSignalProfile(
+            frequency_hz=center_hz,
+            frequency_mhz=round(center_hz / 1e6, 4),
+            raw_measured_hz=float(center_hz),
+            carrier_offset_hz=0.0,
+            signal_name=f"[📺 BROADCAST TV] {ch_label} Wideband 6 MHz Multiplex",
+            profile_category="Broadcast_TV",
+            modulation="Raw I/Q",
+            rigctl_mode="RAW",
+            passband_hz=240_000,
+            filter_low_cut=-120_000,
+            filter_high_cut=120_000,
+            fm_maxdev=75_000,
+            sql_level=-150.0,
+            bandwidth_hz=6_000_000.0,
+            snr_db=22.0,
+            peak_dbm=-42.0,
+            noise_floor_dbm=-82.0,
+            iq_mod_hint="RAW",
+            duty_cycle=1.0,
+            frames_evaluated=3,
+            pictogram_category="BROADCAST_TV",
+            pictogram_neural_class="atsc_tv",
+            pictogram_label="ATSC-8VSB-6MHz",
+            pictogram_confidence=0.98,
+            hailo_accelerated=True,
+            lna_gain=int(feas.get("lna_gain", 32)),
+            vga_gain=int(feas.get("vga_gain", 26)),
+            amp_gain=int(feas.get("amp_gain", 0)),
+            plot_min=-95.0,
+            plot_max=-25.0,
+            is_legal=True,
+            legal_notes="Public broadcast television",
+            locality_ref="Penrose, Fremont County, Colorado (DM78vj)",
+            timestamp_iso=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            is_voice_broadcast=False,
+            is_any_voice=False,
+            voice_label=f"[📺 {ch_label}]",
+            demod_tool="atsc_tv_rx",
+            demod_cmd="gqrx",
+            atsc_channel=tv_info[0] if tv_info is not None else None,
+        )
+        self.tune_signal_in_gqrx(prof)
+
+    def open_broadcast_tv_dialog(
+        self,
+        freq_hz: float = 539_000_000.0,
+        *,
+        auto_start: bool = True,
+        modal: bool = True,
+    ) -> Optional[BroadcastTVReceiverDialog]:
+        """Opens the integrated ATSC 8VSB Digital Video + Analog NTSC Broadcast TV Receiver without crashing."""
+        if self.pipeline.is_scanning():
+            QMessageBox.warning(
+                self,
+                "SDR Locked by Active Scan",
+                "Wait for all scan layers and profile refinement to complete before opening Broadcast TV.",
+            )
+            return None
+        if self._tuning_busy or self._usb_reset_busy:
+            return None
+
+        # Release any active Live ADS-B or Gqrx lock cleanly via SDRResourceArbiter
+        try:
+            self.panel_map.stop_live_adsb()
+            self.arbiter.stop_gqrx_cleanly()
+        except Exception:
+            pass
+        self.btn_release_gqrx.setVisible(False)
+
+        tv_info = identify_atsc_tv_channel(int(round(freq_hz)))
+        center_hz = float(tv_info[1]) if tv_info is not None else float(freq_hz)
+
+        self.dual_progress.set_progress(
+            100.0,
+            100.0,
+            f"📺 Broadcast TV Receiver @ {center_hz / 1e6:.3f} MHz (8.0 MSPS ATSC 8VSB + NTSC Raster)...",
+            busy=False,
+        )
+        self.pill_gqrx.set_telemetry(
+            f"TV {center_hz / 1e6:.1f}M LIVE",
+            pct=100.0,
+            accent_hex="#a78bfa",
+            pulsing=False,
+        )
+
+        dlg = BroadcastTVReceiverDialog(
+            initial_freq_hz=center_hz,
+            compact_screen=self._is_compact_mode,
+            auto_start=auto_start,
+            parent=self,
+        )
+        self._tv_dialog = dlg
+        dlg.open_gqrx_wideband_sig.connect(self._open_tv_channel_in_wideband_gqrx)
+
+        if modal:
+            dlg.exec()
+            self._tv_dialog = None
+            self._poll_hardware_and_gqrx()
+            return None
+
+        dlg.show()
+        return dlg
+
     def handle_signal_demod_action(self, profile: ClassifiedSignalProfile) -> None:
-        """Dispatches signal demodulation to specialized digital/TV decoder or Gqrx SDR receiver."""
+        """Dispatches signal demodulation cleanly to Broadcast TV, Live ADS-B Radar, Telemetry, or Gqrx."""
         if self.pipeline.is_scanning():
             QMessageBox.warning(
                 self,
@@ -1352,12 +1581,45 @@ class SmartScannerMainWindow(QMainWindow):
             return
 
         tool = getattr(profile, "demod_tool", "gqrx")
-        # If specialized digital telemetry / TV scanner tool and not primarily analog voice:
-        if tool in ("rtl_433", "w_scan_cpp", "readsb", "multimon_ng", "direwolf") and not profile.is_voice_broadcast:
-            # Terminate Gqrx cleanly first so HackRF USB transceiver is unlocked
-            if self.gqrx_ctrl.is_running():
-                self.gqrx_ctrl.terminate()
-                time.sleep(0.3)
+        is_tv = (
+            tool in ("atsc_tv_rx", "w_scan_cpp")
+            or profile.profile_category == "Broadcast_TV"
+            or (identify_atsc_tv_channel(profile.frequency_hz) is not None and not profile.is_any_voice)
+        )
+
+        # 1. Broadcast Television (ATSC 8VSB Digital Video/Audio + Analog NTSC Raster)
+        if is_tv:
+            self.open_broadcast_tv_dialog(float(profile.frequency_hz))
+            return
+
+        # 2. Aviation 1090 MHz ADS-B Live Radar Map
+        if tool == "readsb" or (1_088_000_000 <= profile.frequency_hz <= 1_092_000_000):
+            self.arbiter.stop_gqrx_cleanly()
+            self.btn_release_gqrx.setVisible(True)
+            self.btn_release_gqrx.setText("■ Stop ADS-B")
+            if self._is_compact_mode:
+                self._switch_deck_tab(4)
+            self.panel_map.start_live_adsb()
+            self.dual_progress.set_progress(
+                100.0,
+                100.0,
+                "✈️ Live 1090 MHz ADS-B Radar Active (HackRF 2.4 MSPS -> readsb -> Tactical Map)!",
+                busy=False,
+            )
+            self.pill_gqrx.set_telemetry(
+                "ADS-B 1090 LIVE",
+                pct=100.0,
+                accent_hex="#10b981",
+                pulsing=False,
+            )
+            self._poll_hardware_and_gqrx()
+            return
+
+        # 3. Specialized ISM / Pager / APRS Digital Telemetry Decoders
+        if tool in ("rtl_433", "multimon_ng", "direwolf") and not profile.is_voice_broadcast:
+            self.panel_map.stop_live_adsb()
+            self.arbiter.stop_gqrx_cleanly()
+            self.btn_release_gqrx.setVisible(False)
 
             cmd = getattr(profile, "demod_cmd", "")
             title = f"{profile.voice_label or profile.signal_name} ({profile.frequency_mhz:.3f} MHz)"
@@ -1366,7 +1628,7 @@ class SmartScannerMainWindow(QMainWindow):
                 self.dual_progress.set_progress(
                     100.0,
                     100.0,
-                    f"Launched {tool} terminal for {profile.frequency_mhz:.3f} MHz...",
+                    f"Launched {tool} decoder for {profile.frequency_mhz:.3f} MHz...",
                     busy=False,
                 )
                 self.pill_gqrx.set_telemetry(
@@ -1377,7 +1639,8 @@ class SmartScannerMainWindow(QMainWindow):
                 )
                 return
 
-        # Voice broadcasts or analog signals tune live in Gqrx
+        # 4. Voice Broadcasts & Two-Way Analog/Voice Channels -> Live Gqrx Audio
+        self.panel_map.stop_live_adsb()
         self.tune_signal_in_gqrx(profile)
 
     def _on_map_tune_requested(self, name: str, freq_hz: float, demod_mode: str) -> None:
@@ -1396,6 +1659,13 @@ class SmartScannerMainWindow(QMainWindow):
                 demod_override=demod_mode,
             )
             v_info = classify_voice_broadcast(freq_hz, demod=demod_mode, band_name=name)
+            d_prof = get_demod_profile_for_signal(
+                freq_hz=int(round(freq_hz)),
+                demod=feas.get("demod", demod_mode),
+                band_name=name,
+                profile_category=feas.get("profile_category", "Public_Safety"),
+                obw_hz=16000.0,
+            )
             target_prof = ClassifiedSignalProfile(
                 frequency_hz=int(freq_hz),
                 frequency_mhz=round(freq_hz / 1e6, 4),
@@ -1403,7 +1673,7 @@ class SmartScannerMainWindow(QMainWindow):
                 carrier_offset_hz=0.0,
                 signal_name=name,
                 profile_category=feas.get("profile_category", "Public_Safety"),
-                modulation=demod_mode,
+                modulation=feas.get("demod", demod_mode),
                 rigctl_mode=feas.get("rigctl_mode", "FM"),
                 passband_hz=feas.get("passband_hz", 12500),
                 filter_low_cut=feas.get("filter_low_cut", -6250),
@@ -1418,7 +1688,7 @@ class SmartScannerMainWindow(QMainWindow):
                 duty_cycle=1.0,
                 frames_evaluated=3,
                 pictogram_category="NARROWBAND_FM",
-                pictogram_neural_class="carrier_comb",
+                pictogram_neural_class="nfm_voice",
                 pictogram_label="Tactical-Prior",
                 pictogram_confidence=0.95,
                 hailo_accelerated=True,
@@ -1434,6 +1704,9 @@ class SmartScannerMainWindow(QMainWindow):
                 is_voice_broadcast=v_info["is_voice_broadcast"],
                 is_any_voice=v_info["is_any_voice"],
                 voice_label=v_info["voice_label"],
+                demod_tool=d_prof.tool_id,
+                demod_cmd=d_prof.command,
+                atsc_channel=d_prof.atsc_channel,
             )
 
         self.handle_signal_demod_action(target_prof)
@@ -1526,12 +1799,19 @@ class SmartScannerMainWindow(QMainWindow):
         self._poll_hardware_and_gqrx()
 
     def _release_gqrx_manually(self) -> None:
+        try:
+            self.panel_map.stop_live_adsb()
+            get_tv_controller().stop()
+        except Exception:
+            pass
+        self.arbiter.stop_aux_receivers()
         self.arbiter.stop_gqrx_cleanly()
         self.btn_release_gqrx.setVisible(False)
+        self.btn_release_gqrx.setText("■ Release Gqrx")
         self.dual_progress.set_progress(
             100.0,
             100.0,
-            "Gqrx closed cleanly & HackRF One USB lock released to Standby.",
+            "Active receiver closed cleanly & HackRF One USB lock released to Standby.",
             busy=False,
         )
         self._poll_hardware_and_gqrx()
@@ -1540,6 +1820,12 @@ class SmartScannerMainWindow(QMainWindow):
         """1-tap non-root HackRF One hardware USB port reset & Gqrx crash-lock sanitizer."""
         if self.pipeline.is_scanning() or self._tuning_busy or self._usb_reset_busy:
             return
+
+        try:
+            self.panel_map.stop_live_adsb()
+            get_tv_controller().stop()
+        except Exception:
+            pass
 
         self._usb_reset_busy = True
         self.btn_start_scan.setEnabled(False)
@@ -1835,6 +2121,7 @@ class SmartScannerMainWindow(QMainWindow):
         )
 
         if snap.gqrx_running:
+            self.btn_release_gqrx.setText("■ Release Gqrx")
             self.btn_release_gqrx.setVisible(True)
             if g_tel.get("tcp_connected"):
                 fm = g_tel.get("frequency_mhz", 0.0)
@@ -1858,22 +2145,152 @@ class SmartScannerMainWindow(QMainWindow):
                     )
             elif not g_tel.get("busy"):
                 self.pill_gqrx.set_telemetry("GQRX: ACTIVE", pct=80.0, accent_hex="#38bdf8")
+        elif snap.owner in ("ADSB_LIVE", "TV_DEMOD", "TELEM_DECODE"):
+            lbl_map = {
+                "ADSB_LIVE": ("■ Stop ADS-B", "ADS-B 1090 LIVE", "#10b981"),
+                "TV_DEMOD": ("■ Stop TV RX", "TV DEMOD LIVE", "#a78bfa"),
+                "TELEM_DECODE": ("■ Stop Decoder", "DECODER LIVE", "#38bdf8"),
+            }
+            btn_lbl, pill_lbl, col_hex = lbl_map.get(snap.owner, ("■ Stop RX", "AUX RX LIVE", "#10b981"))
+            self.btn_release_gqrx.setText(btn_lbl)
+            self.btn_release_gqrx.setVisible(True)
+            self.pill_gqrx.set_telemetry(pill_lbl, pct=100.0, accent_hex=col_hex, tooltip=snap.detail_text)
         else:
             self.btn_release_gqrx.setVisible(False)
             self.pill_gqrx.set_telemetry(
                 "GQRX: STANDBY",
                 pct=0.0,
                 accent_hex="#64748b",
-                tooltip="Click any unlocked signal row or ▶ TUNE GQRX to launch & demodulate live",
+                tooltip="Click any unlocked signal row or ▶ TUNE GQRX / 📺 WATCH TV to demodulate live",
             )
+
+    # ------------------------------------------------------------------
+    # Reboot-Persistent UI & Receiver Settings (profiles/ui_settings.json)
+    # ------------------------------------------------------------------
+    def _save_ui_settings(self) -> None:
+        if getattr(self, "_loading_ui_settings", False):
+            return
+        try:
+            self._ui_settings_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "version": "3.0-picto-sight-h8",
+                "saved_at_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "scan_mode": self._current_scan_mode,
+                "preset_index": int(self.combo_preset.currentIndex()),
+                "min_mhz": int(self.spin_min_mhz.value()),
+                "max_mhz": int(self.spin_max_mhz.value()),
+                "demod": str(self.combo_demod.currentText()),
+                "squelch_index": int(self.combo_squelch.currentIndex()),
+                "min_snr": int(self.slider_snr.value()),
+                "min_peak": int(self.slider_peak.value()),
+                "l3_frames": int(self.spin_l3_frames.value()),
+                "lna_gain": int(self.spin_lna.value()),
+                "vga_gain": int(self.spin_vga.value()),
+                "amp_enable": bool(self.chk_amp.isChecked()),
+                "legal_only": bool(self.chk_legal_only.isChecked()),
+                "layout_preference": str(self._layout_preference),
+                "signal_filter_mode": str(self._signal_filter_mode),
+            }
+            tmp_path = self._ui_settings_path.with_suffix(".json.tmp")
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self._ui_settings_path)
+        except Exception:
+            pass
+
+    def _load_ui_settings(self) -> None:
+        if not self._ui_settings_path.exists():
+            self._save_ui_settings()
+            return
+        self._loading_ui_settings = True
+        try:
+            with open(self._ui_settings_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            layout_pref = str(data.get("layout_preference", "AUTO")).upper()
+            if layout_pref in ("AUTO", "DECK", "STUDIO") and layout_pref != self._layout_preference:
+                self._layout_preference = layout_pref
+                self._apply_topology(force=True)
+
+            preset_idx = int(data.get("preset_index", 0))
+            if 0 <= preset_idx < self.combo_preset.count():
+                self.combo_preset.blockSignals(True)
+                self.combo_preset.setCurrentIndex(preset_idx)
+                self.combo_preset.blockSignals(False)
+
+            if "min_mhz" in data:
+                self.spin_min_mhz.blockSignals(True)
+                self.spin_min_mhz.setValue(max(1, min(5990, int(data["min_mhz"]))))
+                self.spin_min_mhz.blockSignals(False)
+            if "max_mhz" in data:
+                self.spin_max_mhz.blockSignals(True)
+                self.spin_max_mhz.setValue(max(2, min(6000, int(data["max_mhz"]))))
+                self.spin_max_mhz.blockSignals(False)
+
+            demod_val = str(data.get("demod", ""))
+            d_idx = self.combo_demod.findText(demod_val)
+            if d_idx >= 0:
+                self.combo_demod.blockSignals(True)
+                self.combo_demod.setCurrentIndex(d_idx)
+                self.combo_demod.blockSignals(False)
+
+            sq_idx = int(data.get("squelch_index", 0))
+            if 0 <= sq_idx < self.combo_squelch.count():
+                self.combo_squelch.blockSignals(True)
+                self.combo_squelch.setCurrentIndex(sq_idx)
+                self.combo_squelch.blockSignals(False)
+
+            if "min_snr" in data:
+                self.slider_snr.blockSignals(True)
+                self.slider_snr.setValue(max(3, min(35, int(data["min_snr"]))))
+                self.slider_snr.blockSignals(False)
+            if "min_peak" in data:
+                self.slider_peak.blockSignals(True)
+                self.slider_peak.setValue(max(-95, min(-20, int(data["min_peak"]))))
+                self.slider_peak.blockSignals(False)
+
+            if "lna_gain" in data:
+                self.spin_lna.setValue(max(0, min(40, int(data["lna_gain"]))))
+            if "vga_gain" in data:
+                self.spin_vga.setValue(max(0, min(62, int(data["vga_gain"]))))
+            if "amp_enable" in data:
+                self.chk_amp.setChecked(bool(data["amp_enable"]))
+            if "legal_only" in data:
+                self.chk_legal_only.setChecked(bool(data["legal_only"]))
+
+            mode_val = str(data.get("scan_mode", "QUICK")).upper()
+            if mode_val in ("QUICK", "DEEP", "CUSTOM"):
+                self._select_scan_mode(mode_val)
+            if "l3_frames" in data:
+                self.spin_l3_frames.setValue(max(3, min(10, int(data["l3_frames"]))))
+
+            filt_mode = str(data.get("signal_filter_mode", "ALL")).upper()
+            if filt_mode in ("ALL", "VOICE_BROADCAST", "ALL_VOICE", "TV_DATA"):
+                self._set_signal_filter_mode(filt_mode)
+
+            snr_v = float(self.slider_snr.value())
+            peak_v = float(self.slider_peak.value())
+            self.lbl_snr_pill.setText(f"SNR >= +{snr_v:.0f} dB")
+            self.lbl_peak_pill.setText(f"PEAK >= {peak_v:.0f} dBFS")
+            self.spectrum_canvas.set_thresholds(snr_v, peak_v)
+            self._on_demod_or_filter_changed()
+        except Exception:
+            pass
+        finally:
+            self._loading_ui_settings = False
 
     def closeEvent(self, event: Any) -> None:
         try:
+            self._save_ui_settings()
             self._anim_timer.stop()
             self._hw_timer.stop()
             self._ipc_timer.stop()
             if self.pipeline.is_scanning():
                 self.pipeline.stop_scan()
+            self.panel_map.stop_all()
+            get_tv_controller().stop()
             self.gps_mgr.stop()
             self.pipeline.picto_mgr.close()
         except Exception:

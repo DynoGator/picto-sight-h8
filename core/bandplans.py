@@ -355,8 +355,40 @@ def snap_to_channel_raster(freq_hz: float, region: str = "US") -> Tuple[int, flo
         if abs(raw - snapped) <= 8_000:
             return snapped, float(raw - snapped)
 
-    # 5. FRS / GMRS & UHF/VHF Land Mobile (12.5 kHz grid)
-    if (462_550_000 <= raw <= 467_725_000) or (150_000_000 <= raw <= 174_000_000) or (450_000_000 <= raw <= 512_000_000):
+    # 4b. Citizens Band (CB) Radio 40-channel 10 kHz grid (26.965 - 27.405 MHz)
+    if 26_960_000 <= raw <= 27_410_000:
+        cb_freqs = (
+            26_965_000, 26_975_000, 26_985_000, 27_005_000, 27_015_000,
+            27_025_000, 27_035_000, 27_055_000, 27_065_000, 27_075_000,
+            27_085_000, 27_105_000, 27_115_000, 27_125_000, 27_135_000,
+            27_155_000, 27_165_000, 27_175_000, 27_185_000, 27_205_000,
+            27_215_000, 27_225_000, 27_235_000, 27_245_000, 27_255_000,
+            27_265_000, 27_275_000, 27_285_000, 27_295_000, 27_305_000,
+            27_315_000, 27_325_000, 27_335_000, 27_345_000, 27_355_000,
+            27_365_000, 27_375_000, 27_385_000, 27_395_000, 27_405_000,
+        )
+        nearest_cb = min(cb_freqs, key=lambda c: abs(c - raw))
+        if abs(nearest_cb - raw) <= 4_500:
+            return int(nearest_cb), float(raw - nearest_cb)
+
+    # 4c. FCC ATSC Digital Broadcast TV Channels (6.0 MHz channels: Ch 2-4, 5-6, 7-13, 14-36)
+    # Snaps pilot carriers (lo + 309.441 kHz) and in-band multiplex peaks to official channel center (lo + 3.0 MHz)
+    if region in ("US", "CA", "MX"):
+        tv_lo: Optional[int] = None
+        if 54_000_000 <= raw < 72_000_000:
+            tv_lo = 54_000_000 + int((raw - 54_000_000) // 6_000_000) * 6_000_000
+        elif 76_000_000 <= raw < 87_800_000:
+            tv_lo = 76_000_000 + int((raw - 76_000_000) // 6_000_000) * 6_000_000
+        elif 174_000_000 <= raw < 216_000_000:
+            tv_lo = 174_000_000 + int((raw - 174_000_000) // 6_000_000) * 6_000_000
+        elif 470_000_000 <= raw < 608_000_000:
+            tv_lo = 470_000_000 + int((raw - 470_000_000) // 6_000_000) * 6_000_000
+        if tv_lo is not None:
+            tv_center = tv_lo + 3_000_000
+            return int(tv_center), float(raw - tv_center)
+
+    # 5. FRS / GMRS & UHF/VHF Land Mobile (12.5 kHz grid; stops at 470 MHz before UHF TV Ch 14!)
+    if (462_550_000 <= raw <= 467_725_000) or (150_000_000 <= raw <= 174_000_000) or (450_000_000 <= raw < 470_000_000):
         step = 12_500.0
         snapped = int(round(raw / step) * step)
         if abs(raw - snapped) <= 4_500:
@@ -571,7 +603,7 @@ def classify_voice_broadcast(
         }
 
     # 0b. Aviation ADS-B Mode-S Transponders (1090 MHz & 978 MHz UAT)
-    if (1_088_000_000 <= f_hz <= 1_092_000_000) or abs(f_hz - 978_000_000) <= 1_000_000 or "ADS-B" in pic_label.upper():
+    if (1_088_000_000 <= f_hz <= 1_092_000_000) or abs(f_hz - 978_000_000) <= 1_000_000 or (f_hz >= 960_000_000 and "ADS-B" in pic_label.upper()):
         return {
             "is_voice_broadcast": False,
             "is_any_voice": False,
@@ -582,9 +614,25 @@ def classify_voice_broadcast(
             "bg": "#082f49",
         }
 
-    # 0c. POCSAG / FLEX Digital Pager Channels
+    # 0c. Commercial FM Broadcast (87.5 - 108.0 MHz, OIRT 65.8 - 74.0 MHz) - Checked BEFORE Pager/LMR!
+    if (87_500_000 <= f_hz <= 108_100_000) or (65_800_000 <= f_hz <= 74_000_000):
+        return {
+            "is_voice_broadcast": True,
+            "is_any_voice": True,
+            "voice_label": "[📻 VOICE BROADCAST]",
+            "short_label": "VOICE BROADCAST",
+            "voice_tag": "Voice_Broadcast",
+            "color": "#10b981",  # emerald green
+            "bg": "#064e3b",
+        }
+
+    # 0d. POCSAG / FLEX Digital Pager Channels (Strictly VHF/UHF/900MHz Paging Allocations >= 138 MHz)
     pocsag_freqs = (152_007_500, 152_180_000, 157_740_000, 158_100_000, 158_700_000, 454_025_000, 454_100_000, 459_000_000)
-    if any(abs(f_hz - pf) <= 6_000 for pf in pocsag_freqs) or "PAGER" in pic_label.upper() or "POCSAG" in band_name.upper():
+    if f_hz >= 138_000_000 and (
+        any(abs(f_hz - pf) <= 6_000 for pf in pocsag_freqs)
+        or pic_label.upper().startswith("PAGER-")
+        or "POCSAG" in band_name.upper()
+    ):
         return {
             "is_voice_broadcast": False,
             "is_any_voice": False,

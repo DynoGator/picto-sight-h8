@@ -107,7 +107,7 @@ class TestDemodEngine(unittest.TestCase):
         p_tv = get_demod_profile_for_signal(
             freq_hz=473_000_000, demod="Raw I/Q", band_name="UHF Digital Broadcast TV (Ch 14-36)", profile_category="Broadcast_TV"
         )
-        self.assertEqual(p_tv.tool_id, "w_scan_cpp")
+        self.assertEqual(p_tv.tool_id, "atsc_tv_rx")
         self.assertEqual(p_tv.category, "Broadcast_TV")
         self.assertEqual(p_tv.atsc_channel, 14)
         self.assertIn("BROADCAST TV (Ch 14)", p_tv.demod_label)
@@ -143,7 +143,8 @@ class TestDemodEngine(unittest.TestCase):
         self.assertEqual(res["channel"], 14)
         self.assertEqual(res["center_freq_mhz"], 473.0)
         self.assertAlmostEqual(res["pilot_carrier_mhz"], 470.3094, places=3)
-        self.assertEqual(res["scanner_tool"], "w_scan_cpp")
+        self.assertEqual(res["scanner_tool"], "atsc_tv_rx")
+        self.assertEqual(res["dvb_scanner_tool"], "w_scan_cpp")
 
         # Non-TV carrier
         res_non = run_atsc_tv_analysis(107_900_000)
@@ -158,7 +159,7 @@ class TestDemodEngine(unittest.TestCase):
 
         # 2. TV dispatch
         res_tv = demodulate_signal(473_000_000, demod="Raw I/Q", band_name="UHF Digital Broadcast TV (Ch 14-36)")
-        self.assertEqual(res_tv["tool_id"], "w_scan_cpp")
+        self.assertEqual(res_tv["tool_id"], "atsc_tv_rx")
         self.assertEqual(res_tv["demod_data"]["type"], "BROADCAST_TV")
         self.assertEqual(res_tv["demod_data"]["tv_info"]["channel"], 14)
 

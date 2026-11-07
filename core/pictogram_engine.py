@@ -153,66 +153,88 @@ class AIPictogramClassifierManager:
         center_freq_hz: float,
         bandwidth_hz: float,
         frame_idx: int,
+        ref_floor_db: Optional[float] = None,
     ) -> Tuple[Optional[Any], Tuple[int, int, int, int]]:
         """
-        Extracts the active carrier/modulation bounding box relative to the 20th-percentile
-        1 MHz spectral noise floor so BOTH continuous transmissions (FM, NOAA, ATC) and
-        bursty signals produce high-contrast 224x224x3 Viridis patches for Hailo-8 inference.
+        Extracts the active carrier/modulation bounding box relative to the 12th-15th percentile
+        (or out-of-channel reference) spectral noise floor, while enforcing a scale-preserving
+        minimum horizontal context window (48 bins = 375 kHz out of 1.000 MHz, expanding up to
+        128 bins for wideband multiplexes) so Hailo-8 ResNet-50 sees true physical bandwidth
+        geometry (e.g. 12.5 kHz NFM vs 200 kHz WFM vs 6.0 MHz ATSC 8VSB TV).
         """
         rows, cols = frame.shape
-        floor_db = float(np.percentile(frame, 20))
+        p12 = float(np.percentile(frame, 12))
+        p20 = float(np.percentile(frame, 20))
+        if ref_floor_db is not None and float(ref_floor_db) < p20 - 4.5:
+            floor_db = max(float(ref_floor_db), p12 - 18.0)
+        else:
+            floor_db = float(np.percentile(frame, 14))
+
         peak_db = float(np.max(frame))
         snr_2d = frame - floor_db
 
-        # Focus search within central ±320 kHz of the 1.000 MHz window around target carrier
-        mid_c = cols // 2
-        half_span = max(12, int(cols * 0.34))
-        c_lo_search = max(0, mid_c - half_span)
-        c_hi_search = min(cols, mid_c + half_span)
+        # Check if frame is a wideband flat-top multiplex (e.g., ATSC 8VSB TV shelf filling >65% of bins)
+        col_means = np.mean(snr_2d, axis=0)
+        wide_active_frac = float(np.mean(col_means >= max(4.0, (peak_db - floor_db) * 0.28)))
+        if wide_active_frac >= 0.65:
+            active_cols = np.where(col_means >= max(3.5, (peak_db - floor_db) * 0.22))[0]
+            c0 = int(active_cols[0]) if len(active_cols) else 0
+            c1 = int(active_cols[-1] + 1) if len(active_cols) else cols
+            r0, r1 = 0, rows
+            best_box: Optional[Tuple[int, int, int, int]] = (r0, r1, c0, max(c0 + 4, c1))
+        else:
+            # Focus search within central ±420 kHz of the 1.000 MHz window around target carrier
+            mid_c = cols // 2
+            half_span = max(16, int(cols * 0.42))
+            c_lo_search = max(0, mid_c - half_span)
+            c_hi_search = min(cols, mid_c + half_span)
 
-        thresh = max(4.5, min(12.0, (peak_db - floor_db) * 0.38))
-        sub_mask = (snr_2d[:, c_lo_search:c_hi_search] >= thresh).astype(np.uint8) * 255
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 5))
-        closed = cv2.morphologyEx(sub_mask, cv2.MORPH_CLOSE, kernel)
-        contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            thresh = max(4.5, min(12.0, (peak_db - floor_db) * 0.36))
+            sub_mask = (snr_2d[:, c_lo_search:c_hi_search] >= thresh).astype(np.uint8) * 255
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 5))
+            closed = cv2.morphologyEx(sub_mask, cv2.MORPH_CLOSE, kernel)
+            contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        best_box: Optional[Tuple[int, int, int, int]] = None
-        best_score = -1.0
-        for cnt in contours:
-            cx, ry, bw, bh = cv2.boundingRect(cnt)
-            c0 = c_lo_search + cx
-            c1 = min(cols, c0 + bw)
-            r0 = ry
-            r1 = min(rows, ry + bh)
-            if (c1 - c0) < 1 or (r1 - r0) < 3:
-                continue
-            patch_snr = float(np.mean(snr_2d[r0:r1, c0:c1]))
-            # Prefer clusters close to center frequency with strong energy
-            dist_penalty = abs(((c0 + c1) * 0.5) - mid_c) * 0.18
-            score = patch_snr * math.sqrt((c1 - c0) * (r1 - r0)) - dist_penalty
-            if score > best_score:
-                best_score = score
-                best_box = (r0, r1, c0, c1)
+            best_box = None
+            best_score = -1.0
+            for cnt in contours:
+                cx, ry, bw, bh = cv2.boundingRect(cnt)
+                c0 = c_lo_search + cx
+                c1 = min(cols, c0 + bw)
+                r0 = ry
+                r1 = min(rows, ry + bh)
+                if (c1 - c0) < 1 or (r1 - r0) < 2:
+                    continue
+                patch_snr = float(np.mean(snr_2d[r0:r1, c0:c1]))
+                dist_penalty = abs(((c0 + c1) * 0.5) - mid_c) * 0.16
+                score = patch_snr * math.sqrt((c1 - c0) * (r1 - r0)) - dist_penalty
+                if score > best_score:
+                    best_score = score
+                    best_box = (r0, r1, c0, c1)
 
-        if best_box is None:
-            # Fallback centered context window around target carrier
-            c0 = max(0, mid_c - 12)
-            c1 = min(cols, mid_c + 12)
-            best_box = (0, rows, c0, c1)
+            if best_box is None:
+                mid_c = cols // 2
+                c0 = max(0, mid_c - 4)
+                c1 = min(cols, mid_c + 4)
+                best_box = (0, rows, c0, c1)
 
         r0, r1, c0, c1 = best_box
-        # Pad context slightly so the ResNet sees carrier + sideband skirt geometry
-        pad_c = max(4, (c1 - c0) // 3)
-        pad_r = max(2, (r1 - r0) // 8)
-        pc0 = max(0, c0 - pad_c)
-        pc1 = min(cols, c1 + pad_c)
+        contour_w = max(1, c1 - c0)
+        contour_h = max(1, r1 - r0)
+
+        # Enforce scale-preserving minimum 48-bin (375 kHz) horizontal context so narrowband (NFM/AM)
+        # and wideband (WFM/ATSC/ADS-B) maintain distinct visual widths inside 224x224 Viridis!
+        min_ctx_cols = min(cols, max(contour_w + max(6, contour_w // 4), 48))
+        box_mid_c = (c0 + c1) // 2
+        pc0 = max(0, min(cols - min_ctx_cols, box_mid_c - min_ctx_cols // 2))
+        pc1 = min(cols, pc0 + min_ctx_cols)
+        pad_r = max(2, contour_h // 8)
         pr0 = max(0, r0 - pad_r)
         pr1 = min(rows, r1 + pad_r)
 
         patch = frame[pr0:pr1, pc0:pc1]
         dyn_range = max(16.0, peak_db - floor_db + 4.0)
         norm = np.clip((patch - floor_db) / dyn_range * 255.0, 0, 255).astype(np.uint8)
-        # cv2.COLORMAP_VIRIDIS matches training distribution of HailoPictogramClassifier
         bgr_patch = cv2.applyColorMap(norm, cv2.COLORMAP_VIRIDIS)
         rgb_224 = cv2.resize(bgr_patch, (224, 224), interpolation=cv2.INTER_LINEAR)
 
@@ -223,18 +245,18 @@ class AIPictogramClassifierManager:
         roi_center_hz = (center_freq_hz - bandwidth_hz * 0.5) + ((c0 + c1) * 0.5) * bin_hz
         roi = self._roi_cls(
             roi_id=f"f{frame_idx}_{uuid.uuid4().hex[:6]}",
-            row_min=pr0,
-            row_max=pr1,
-            col_min=pc0,
-            col_max=pc1,
-            width_bins=pc1 - pc0,
-            height_rows=pr1 - pr0,
-            area=(pc1 - pc0) * (pr1 - pr0),
+            row_min=r0,
+            row_max=r1,
+            col_min=c0,
+            col_max=c1,
+            width_bins=contour_w,
+            height_rows=contour_h,
+            area=contour_w * contour_h,
             center_freq_hz=float(roi_center_hz),
-            bandwidth_hz=float((c1 - c0) * bin_hz),
-            duration_s=0.045,
-            snr_db=float(np.max(snr_2d[pr0:pr1, pc0:pc1])),
-            peak_dbm=float(np.max(patch)),
+            bandwidth_hz=float(contour_w * bin_hz),
+            duration_s=0.045 * (contour_h / max(1.0, float(rows))),
+            snr_db=float(np.max(snr_2d[r0:r1, c0:c1])),
+            peak_dbm=float(np.max(frame[r0:r1, c0:c1])),
             patch=patch,
             normalized_rgb=rgb_224,
         )
@@ -330,10 +352,19 @@ class AIPictogramClassifierManager:
         rois_analyzed = 0
         used_hw_any = False
 
+        ref_floor_db = iq_metrics.get("ref_floor_dbfs")
         with self._lock:
+            if self._extractor is not None and hasattr(self._extractor, "reset"):
+                self._extractor.reset()
             # 1. Evaluate spectral-floor ROI on EVERY independent 1 MHz frame (>= 3 frames)
             for idx, frame in enumerate(valid_frames):
-                roi, box = self._build_spectral_frame_roi(frame, center_freq_hz, bandwidth_hz, idx)
+                roi, box = self._build_spectral_frame_roi(
+                    frame,
+                    center_freq_hz,
+                    bandwidth_hz,
+                    idx,
+                    ref_floor_db=float(ref_floor_db) if ref_floor_db is not None else None,
+                )
                 boxes.append(box)
                 if roi is not None and self._classifier is not None:
                     try:
@@ -374,10 +405,32 @@ class AIPictogramClassifierManager:
                             except Exception:
                                 pass
 
-        # Aggregate mean probability across all >=3 evaluated frames
+        snr_db = float(iq_metrics.get("snr_db", 12.0))
+        obw_hz = float(iq_metrics.get("obw_hz", 25_000.0))
+        iq_mod = str(iq_metrics.get("iq_mod_hint", "NFM"))
+        duty_cycle = float(iq_metrics.get("duty_cycle", 1.0))
+
+        # Aggregate mean probability across all >=3 evaluated frames with physical allocation gating
         agg_probs: List[Tuple[str, float]] = []
         if class_scores:
             raw_means = {k: float(np.mean(v)) for k, v in class_scores.items()}
+            if 87.8e6 <= center_freq_hz <= 108.1e6:
+                if "wfm_stereo" in raw_means:
+                    raw_means["wfm_stereo"] *= 1.35
+                for unalloc in ("fsk_pager", "atsc_tv", "adsb_pulse", "ism_telemetry"):
+                    if unalloc in raw_means:
+                        raw_means[unalloc] *= 0.25
+            else:
+                if obw_hz < 1_000_000 and "atsc_tv" in raw_means:
+                    try:
+                        from core.demod_engine import identify_atsc_tv_channel
+                        if identify_atsc_tv_channel(center_freq_hz) is None:
+                            raw_means["atsc_tv"] *= 0.30
+                    except Exception:
+                        raw_means["atsc_tv"] *= 0.30
+                if not (976.0e6 <= center_freq_hz <= 1_100.0e6) and "adsb_pulse" in raw_means:
+                    raw_means["adsb_pulse"] *= 0.35
+
             total = sum(raw_means.values()) or 1.0
             agg_probs = sorted(
                 [(k, val / total) for k, val in raw_means.items()],
@@ -389,11 +442,6 @@ class AIPictogramClassifierManager:
 
         best_neural_class, best_neural_conf = agg_probs[0]
         top_candidates = [{"class": k, "score": round(v, 4)} for k, v in agg_probs[:6]]
-
-        snr_db = float(iq_metrics.get("snr_db", 12.0))
-        obw_hz = float(iq_metrics.get("obw_hz", 25_000.0))
-        iq_mod = str(iq_metrics.get("iq_mod_hint", "NFM"))
-        duty_cycle = float(iq_metrics.get("duty_cycle", 1.0))
 
         # Check if neural head strongly flags noise_reject AND physical SNR/duty is weak
         is_noise = bool(
@@ -472,10 +520,11 @@ class AIPictogramClassifierManager:
         else:
             eff_conf = max(0.65, min(0.99, eff_conf + min(0.18, snr_db / 160.0)))
 
-        # Distinct exotic 2D waterfall pictograms outside standard FM broadcast
-        if eff_class == "glyph" and neural_conf >= 0.72 and not (87.8e6 <= center_freq_hz <= 108.1e6):
+        # Distinct exotic 2D waterfall pictograms outside standard FM/TV broadcast
+        is_fm_band = 87.8e6 <= center_freq_hz <= 108.1e6
+        if eff_class == "glyph" and neural_conf >= 0.72 and not is_fm_band:
             return "PICTO_GLYPH", f"Pictogram-Glyph [{eff_class}]", eff_conf
-        if eff_class == "geometric" and neural_conf >= 0.76 and iq_mod == "DIGITAL_BURST":
+        if eff_class == "geometric" and neural_conf >= 0.74 and (iq_mod == "DIGITAL_BURST" or obw_hz >= 35_000):
             return "PICTO_GEOMETRIC", f"Swept-Chirp [{eff_class}]", eff_conf
 
         # 1. ATSC Digital Broadcast Television Channels (VHF Low 2-6, VHF High 7-13, UHF 14-36)
@@ -484,14 +533,16 @@ class AIPictogramClassifierManager:
             tv_info = identify_atsc_tv_channel(center_freq_hz)
             if tv_info is not None:
                 ch, center, lo, pilot = tv_info
-                tv_conf = max(0.85, min(0.99, eff_conf + 0.10))
+                tv_conf = max(0.86, min(0.99, eff_conf + (0.12 if eff_class == "atsc_tv" else 0.08)))
                 return "BROADCAST_TV", f"ATSC-TV-Ch{ch} ({eff_class})", tv_conf
         except Exception:
             pass
 
-        # 2. Aviation ADS-B Mode-S Transponders (1090 MHz)
+        # 2. Aviation ADS-B Mode-S Transponders (1090 MHz & 978 MHz UAT)
         if 1_088_000_000 <= center_freq_hz <= 1_092_000_000:
             return "AVIATION_ADSB", f"ADS-B-1090 ({eff_class})", max(0.88, eff_conf)
+        if 977_000_000 <= center_freq_hz <= 979_000_000:
+            return "AVIATION_ADSB", f"UAT-978 ({eff_class})", max(0.86, eff_conf)
 
         # 3. Weather Satellite Telemetry (137.0 - 138.0 MHz APT/LRPT)
         if 137_000_000 <= center_freq_hz <= 138_000_000:
@@ -501,20 +552,7 @@ class AIPictogramClassifierManager:
         if abs(center_freq_hz - 144_390_000) <= 25_000:
             return "APRS_PACKET", f"APRS-AX25 ({eff_class})", max(0.85, eff_conf)
 
-        # 5. ISM IoT Telemetry Bands (433 MHz, 915 MHz, 315 MHz)
-        if 433_000_000 <= center_freq_hz <= 434_900_000:
-            return "ISM_TELEMETRY", f"Telemetry-433 ({eff_class})", eff_conf
-        if 902_000_000 <= center_freq_hz <= 928_000_000:
-            return "ISM_TELEMETRY", f"Telemetry-915 ({eff_class})", eff_conf
-        if 314_500_000 <= center_freq_hz <= 315_500_000:
-            return "ISM_TELEMETRY", f"Telemetry-315 ({eff_class})", eff_conf
-
-        # 6. Pager / POCSAG / FLEX Data Channels (152-158.8 MHz, 454-460 MHz)
-        is_pager_band = (152_000_000 <= center_freq_hz <= 158_800_000) or (454_000_000 <= center_freq_hz <= 460_000_000)
-        if is_pager_band and (iq_mod == "DIGITAL_BURST" or eff_class in ("tone_matrix", "raster", "carrier_comb")):
-            return "PAGER_DATA", f"Pager-POCSAG ({eff_class})", eff_conf
-
-        # 7. Citizens Band (CB) Radio (26.965 - 27.405 MHz AM)
+        # 5. Citizens Band (CB) Radio (26.965 - 27.405 MHz AM)
         if 26_960_000 <= center_freq_hz <= 27_410_000:
             if abs(center_freq_hz - 27_185_000) <= 6_000:
                 return "TRUCKER_CB", f"CB-19-Trucker ({eff_class})", max(0.85, eff_conf)
@@ -522,7 +560,7 @@ class AIPictogramClassifierManager:
                 return "TRUCKER_CB", f"CB-09-Emerg ({eff_class})", max(0.85, eff_conf)
             return "TRUCKER_CB", f"CB-Voice ({eff_class})", max(0.80, eff_conf)
 
-        # 8. Fremont County / Penrose Fire & Public Safety
+        # 6. Fremont County / Penrose Priority Fire, Sheriff, SAR, Medevac (evaluated BEFORE generic VHF/Pager!)
         if abs(center_freq_hz - 155_880_000) <= 6_000:
             return "FIRE_EMS", f"Penrose-Fire-Ops ({eff_class})", max(0.88, eff_conf)
         if abs(center_freq_hz - 154_400_000) <= 6_000:
@@ -538,13 +576,13 @@ class AIPictogramClassifierManager:
         if abs(center_freq_hz - 155_340_000) <= 6_000:
             return "MEDEVAC_HOSPITAL", f"CHERN-Med9-Hospital ({eff_class})", max(0.88, eff_conf)
 
-        # 9. Local Aviation Airband & Penrose Fremont Co Airport (1V6)
+        # 7. Local Aviation Airband & Penrose Fremont Co Airport (1V6)
         if abs(center_freq_hz - 122_800_000) <= 6_000:
             return "AVIATION_AM", f"1V6-Penrose-CTAF ({eff_class})", max(0.88, eff_conf)
         if abs(center_freq_hz - 120_025_000) <= 6_000:
             return "AVIATION_AM", f"1V6-Penrose-AWOS ({eff_class})", max(0.88, eff_conf)
 
-        # 10. Railroad Operations (Union Pacific & Royal Gorge)
+        # 8. Railroad Operations (Union Pacific & Royal Gorge)
         if 160_215_000 <= center_freq_hz <= 161_565_000:
             if abs(center_freq_hz - 161_490_000) <= 6_000:
                 return "RAILROAD_AAR", f"UP-AAR92-Rail ({eff_class})", max(0.88, eff_conf)
@@ -554,23 +592,49 @@ class AIPictogramClassifierManager:
                 return "RAILROAD_AAR", f"JointLine-AAR96 ({eff_class})", max(0.88, eff_conf)
             return "RAILROAD_AAR", f"Rail-AAR ({eff_class})", max(0.82, eff_conf)
 
+        # 9. ISM IoT Telemetry Bands (433 MHz, 915 MHz, 315 MHz)
+        if 433_000_000 <= center_freq_hz <= 434_900_000:
+            return "ISM_TELEMETRY", f"Telemetry-433 ({eff_class})", eff_conf
+        if 902_000_000 <= center_freq_hz <= 928_000_000:
+            return "ISM_TELEMETRY", f"Telemetry-915 ({eff_class})", eff_conf
+        if 314_500_000 <= center_freq_hz <= 315_500_000:
+            return "ISM_TELEMETRY", f"Telemetry-315 ({eff_class})", eff_conf
+
+        # 10. Dedicated POCSAG / FLEX Pager Sub-Bands (152.00-152.86, 157.74-158.72, 454.00-454.68, 929-932 MHz)
+        is_dedicated_pager = (
+            (152_000_000 <= center_freq_hz <= 152_860_000)
+            or (157_740_000 <= center_freq_hz <= 158_720_000)
+            or (454_000_000 <= center_freq_hz <= 454_680_000)
+            or (929_000_000 <= center_freq_hz <= 932_000_000)
+        )
+        if is_dedicated_pager and (
+            iq_mod == "DIGITAL_BURST" or eff_class in ("fsk_pager", "tone_matrix", "raster", "ism_telemetry")
+        ):
+            return "PAGER_DATA", f"Pager-POCSAG ({eff_class})", eff_conf
+        if eff_class == "fsk_pager" and iq_mod == "DIGITAL_BURST" and (
+            150_000_000 <= center_freq_hz <= 470_000_000
+        ):
+            return "PAGER_DATA", f"Pager-POCSAG ({eff_class})", eff_conf
+
         # Band + IQ + Neural pattern fusion
-        if 87.8e6 <= center_freq_hz <= 108.1e6:
-            sub = "MPX-Comb" if eff_class in ("carrier_comb", "raster") else f"WFM-{eff_class}"
-            return "BROADCAST_WFM", f"WFM-Stereo ({sub})", eff_conf
+        if is_fm_band:
+            sub = "MPX-Stereo" if (eff_class in ("wfm_stereo", "carrier_comb", "raster") or obw_hz >= 75_000) else "FM-Carrier"
+            return "BROADCAST_WFM", f"WFM-Stereo ({sub})", max(0.84, eff_conf)
         if 108.0e6 <= center_freq_hz <= 137.0e6:
             return "AVIATION_AM", f"Airband-AM ({eff_class})", eff_conf
         if 162.38e6 <= center_freq_hz <= 162.57e6:
             return "WEATHER_NFM", f"NOAA-WX-NFM ({eff_class})", eff_conf
         if 156.0e6 <= center_freq_hz <= 162.03e6:
             return "MARINE_NFM", f"Marine-VHF ({eff_class})", eff_conf
-        if iq_mod == "WFM" or obw_hz >= 85_000:
+        if (eff_class == "atsc_tv" and obw_hz >= 1_200_000) or obw_hz >= 1_500_000:
+            return "BROADCAST_TV", f"Wideband-TV ({eff_class})", eff_conf
+        if eff_class == "wfm_stereo" or iq_mod == "WFM" or obw_hz >= 85_000:
             return "WIDEBAND_MUX", f"Wideband-{eff_class}", eff_conf
-        if iq_mod == "AM":
+        if eff_class == "am_voice" or iq_mod == "AM":
             return "AM_VOICE", f"AM-Carrier ({eff_class})", eff_conf
         if iq_mod == "CW":
             return "CW_BEACON", f"CW-Tone ({eff_class})", eff_conf
-        if iq_mod == "DIGITAL_BURST" or eff_class in ("tone_matrix", "raster"):
+        if iq_mod == "DIGITAL_BURST" or eff_class in ("fsk_pager", "ism_telemetry", "adsb_pulse", "tone_matrix", "raster"):
             return "PICTO_BURST_MATRIX", f"Burst/FSK ({eff_class})", eff_conf
 
         return "NARROWBAND_FM", f"NFM-Voice ({eff_class})", eff_conf

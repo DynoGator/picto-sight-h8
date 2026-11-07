@@ -393,6 +393,7 @@ class MultiLayerScannerPipeline:
                     )
                     continue
 
+                iq_metrics["ref_floor_dbfs"] = cand.noise_floor_dbm
                 picto_result = self.picto_mgr.analyze_spectrogram_frames(
                     center_freq_hz=cand.center_freq_hz,
                     frames=frames,

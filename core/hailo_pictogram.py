@@ -1,7 +1,8 @@
 """
 Picto-Sight H8 | Hailo-8 (26 TOPS) RF Waterfall Pictogram Extractor & Neural Classifier
 Hardware-accelerated 2D spectrogram ROI segmentation, Viridis 224x224x3 normalization,
-HailoRT PCIe VDevice feature extraction, and calibrated transfer-head classification.
+HailoRT PCIe VDevice feature extraction, 16-D physical RF spectral morphology fusion,
+and calibrated multi-class RF modulation + pictogram transfer-head classification.
 """
 
 from __future__ import annotations
@@ -46,10 +47,10 @@ def _resolve_default_hef() -> str:
     env_hef = os.environ.get("PICTOSIGHT_HEF_PATH", "").strip()
     candidates = [
         env_hef,
-        str(PROJECT_ROOT / "models" / "resnet_v1_50_h8l.hef"),
         str(PROJECT_ROOT / "models" / "resnet_v1_50_h8.hef"),
-        "/usr/share/hailo-models/resnet_v1_50_h8l.hef",
+        str(PROJECT_ROOT / "models" / "resnet_v1_50_h8l.hef"),
         "/usr/share/hailo-models/resnet_v1_50_h8.hef",
+        "/usr/share/hailo-models/resnet_v1_50_h8l.hef",
     ]
     for path in candidates:
         if path and os.path.exists(path):
@@ -59,11 +60,11 @@ def _resolve_default_hef() -> str:
 
 class PictogramCategory(str, enum.Enum):
     GLYPH = "PICTO_GLYPH"                # Alphanumeric character / spectrogram symbol
-    RASTER = "PICTO_RASTER"              # Dense 2D waterfall image / SSTV / OFDM raster
+    RASTER = "PICTO_RASTER"              # Dense 2D waterfall image / SSTV / ATSC 8VSB / OFDM raster
     GEOMETRIC = "PICTO_GEOMETRIC"        # Swept polygons, chirps, stepped carriers
-    BURST_MATRIX = "PICTO_BURST_MATRIX"  # Pulsed multi-tone / FSK matrix
-    CARRIER_COMB = "PICTO_CARRIER_COMB"  # Multi-carrier / MPX harmonic comb
-    ANOMALY = "PICTO_ANOMALY"            # High-SNR unclassified structural energy
+    BURST_MATRIX = "PICTO_BURST_MATRIX"  # Pulsed multi-tone / FSK / POCSAG / ISM / ADS-B matrix
+    CARRIER_COMB = "PICTO_CARRIER_COMB"  # Multi-carrier / WFM MPX / NFM / AM continuous carrier
+    ANOMALY = "PICTO_ANOMALY"            # High-SNR unclassified structural energy or noise reject
 
 
 @dataclass
@@ -113,6 +114,164 @@ class PictogramDetection:
         return d
 
 
+def compute_roi_physical_features(roi: PictogramROI, ref_span_hz: float = 1_000_000.0) -> np.ndarray:
+    """
+    Computes a 16-dimensional scale-aware physical RF spectrogram morphology vector
+    from a PictogramROI patch (dBFS) and bandwidth/duration geometry:
+      0: norm_bw             - log-normalized occupied bandwidth relative to 1 MHz
+      1: aspect_ratio        - tanh-compressed width/height bin ratio
+      2: snr_norm            - normalized peak SNR (0..1 over 45 dB)
+      3: duty_cycle          - fraction of time rows with active carrier energy
+      4: row_burst_rate      - normalized temporal on/off transition rate (burstiness)
+      5: spectral_flatness   - geometric/arithmetic mean ratio across frequency PSD (ATSC/OFDM vs CW/NFM)
+      6: crest_factor        - peak-to-mean dB concentration of mean PSD (carrier spine vs flat-top)
+      7: bw_3db_frac         - fraction of patch columns within -3 dB of peak
+      8: bw_10db_frac        - fraction of patch columns within -10 dB of peak
+      9: shape_factor        - -3dB to -10dB skirt steepness ratio (rectangular 8VSB/OFDM vs Gaussian FM)
+     10: carrier_spine_ratio - central 3-column energy vs sideband energy (AM/CW pilot vs suppressed/FSK)
+     11: twin_peak_score     - bimodal FSK / stereo sideband separation score
+     12: pilot_edge_score    - asymmetric lower-edge pilot tone prominence (ATSC +309 kHz 8VSB pilot)
+     13: freq_centroid_drift - row-to-row spectral centroid drift (swept chirp / geometric vs stationary)
+     14: freq_centroid_std   - standard deviation of instantaneous row peak bin (FM deviation / glyph contour)
+     15: interior_hole_score - 2D topological interior variance score (2D glyphs/rasters vs 1D carriers)
+    """
+    patch = np.asarray(roi.patch, dtype=np.float32)
+    if patch.ndim != 2 or patch.size < 4:
+        return np.zeros(16, dtype=np.float32)
+
+    rows, cols = patch.shape
+    floor_db = float(np.percentile(patch, 20))
+    peak_db = float(np.max(patch))
+    dyn_db = max(1.0, peak_db - floor_db)
+    snr_2d = np.maximum(0.0, patch - floor_db)
+
+    # 0..2: Macro bandwidth, contour aspect, SNR
+    bw_hz = max(1_000.0, float(roi.bandwidth_hz))
+    norm_bw = float(np.clip(np.log10(bw_hz / 1_000.0) / 3.0, 0.0, 1.2))  # 1kHz->0, 1MHz->1.0
+    w_ref = float(roi.width_bins) if getattr(roi, "width_bins", 0) > 0 else float(cols)
+    h_ref = float(roi.height_rows) if getattr(roi, "height_rows", 0) > 0 else float(rows)
+    aspect_ratio = float(np.tanh((w_ref / max(1.0, h_ref)) * 0.35))
+    snr_norm = float(np.clip(roi.snr_db / 45.0, 0.0, 1.2))
+
+    # 3..4: Temporal duty cycle & burst transition rate
+    row_peaks = np.max(snr_2d, axis=1)
+    active_thresh = max(3.0, dyn_db * 0.35)
+    active_rows = (row_peaks >= active_thresh).astype(np.float32)
+    duty_cycle = float(np.mean(active_rows))
+    if rows > 2:
+        transitions = float(np.sum(np.abs(np.diff(active_rows)))) / float(rows - 1)
+    else:
+        transitions = 0.0
+    row_burst_rate = float(np.clip(transitions * 2.5, 0.0, 1.0))
+
+    # 5..9: Spectral PSD flatness, crest factor, -3dB / -10dB shape factor
+    active_idx = active_rows > 0.5
+    mean_psd_db = np.mean(patch[active_idx], axis=0) if np.any(active_idx) else np.mean(patch, axis=0)
+    psd_rel_db = np.maximum(0.0, mean_psd_db - float(np.percentile(mean_psd_db, 15)))
+    lin_psd = 10.0 ** (np.clip(psd_rel_db, 0.0, 50.0) / 10.0)
+    geom_mean = float(np.exp(np.mean(np.log(lin_psd + 1e-6))))
+    arith_mean = float(np.mean(lin_psd) + 1e-6)
+    spectral_flatness = float(np.clip(geom_mean / arith_mean, 0.0, 1.0))
+
+    psd_max = float(np.max(psd_rel_db))
+    crest_factor = float(np.clip((psd_max - float(np.mean(psd_rel_db))) / 25.0, 0.0, 1.2))
+
+    bw_3db_frac = float(np.mean(psd_rel_db >= max(1.5, psd_max - 3.0)))
+    bw_10db_frac = float(np.mean(psd_rel_db >= max(1.0, psd_max - 10.0)))
+    shape_factor = float(np.clip(bw_3db_frac / max(0.02, bw_10db_frac), 0.0, 1.0))
+
+    # 10: Central carrier spine vs sidebands
+    mid = cols // 2
+    c0, c1 = max(0, mid - 1), min(cols, mid + 2)
+    spine_e = float(np.mean(psd_rel_db[c0:c1])) if c1 > c0 else psd_max
+    side_mask = np.ones(cols, dtype=bool)
+    side_mask[c0:c1] = False
+    side_e = float(np.mean(psd_rel_db[side_mask])) if np.any(side_mask) else 0.0
+    carrier_spine_ratio = float(np.clip((spine_e - side_e) / max(3.0, psd_max), -1.0, 1.0))
+
+    # 11: Twin-peak FSK / bimodal score
+    if cols >= 6:
+        left_pk = float(np.max(psd_rel_db[:mid]))
+        right_pk = float(np.max(psd_rel_db[mid:]))
+        valley = float(psd_rel_db[mid])
+        twin_peak_score = float(np.clip((min(left_pk, right_pk) - valley) / max(3.0, psd_max), 0.0, 1.0))
+    else:
+        twin_peak_score = 0.0
+
+    # 12: Lower-quarter pilot tone prominence (ATSC 8VSB pilot carrier + flat shelf)
+    q1 = max(1, cols // 3)
+    pilot_pk = float(np.max(psd_rel_db[:q1]))
+    shelf_med = float(np.median(psd_rel_db))
+    pilot_edge_score = float(
+        np.clip(((pilot_pk - shelf_med) / max(3.0, psd_max)) * (1.0 if bw_10db_frac > 0.45 else 0.25), 0.0, 1.0)
+    )
+
+    # 13..14: Row-to-row spectral centroid drift (chirps) & deviation std
+    col_coords = np.linspace(-1.0, 1.0, cols, dtype=np.float32)
+    weights = np.maximum(0.0, snr_2d - active_thresh * 0.5) + 1e-4
+    centroids = np.sum(weights * col_coords[None, :], axis=1) / np.sum(weights, axis=1)
+    if np.sum(active_idx) >= 4:
+        act_c = centroids[active_idx]
+        # Monotonic linear slope vs random jitter
+        t_axis = np.linspace(-1.0, 1.0, len(act_c), dtype=np.float32)
+        slope = abs(float(np.mean(act_c * t_axis)) / (float(np.mean(t_axis ** 2)) + 1e-6))
+        freq_centroid_drift = float(np.clip(slope * 1.8, 0.0, 1.2))
+        freq_centroid_std = float(np.clip(np.std(act_c) * 2.5, 0.0, 1.2))
+    else:
+        freq_centroid_drift = 0.0
+        freq_centroid_std = 0.0
+
+    # 15: 2D interior structural variance (distinguishes 2D alphanumeric glyphs/rasters from 1D vertical bars)
+    if rows >= 6 and cols >= 6:
+        row_norm = snr_2d / (np.max(snr_2d, axis=1, keepdims=True) + 1e-3)
+        temporal_mod = float(np.mean(np.std(row_norm, axis=0)))
+        interior_hole_score = float(np.clip(temporal_mod * 3.0, 0.0, 1.2))
+    else:
+        interior_hole_score = 0.0
+
+    return np.array(
+        [
+            norm_bw,
+            aspect_ratio,
+            snr_norm,
+            duty_cycle,
+            row_burst_rate,
+            spectral_flatness,
+            crest_factor,
+            bw_3db_frac,
+            bw_10db_frac,
+            shape_factor,
+            carrier_spine_ratio,
+            twin_peak_score,
+            pilot_edge_score,
+            freq_centroid_drift,
+            freq_centroid_std,
+            interior_hole_score,
+        ],
+        dtype=np.float32,
+    )
+
+
+# Mapping from fine-grained & legacy neural head classes -> (PictogramCategory, Display Label)
+NEURAL_CLASS_SEMANTICS: dict[str, tuple[PictogramCategory, str]] = {
+    # Upgraded 10-class RF Modulation + Pictogram Head
+    "wfm_stereo": (PictogramCategory.CARRIER_COMB, "WFM-Stereo-MPX"),
+    "nfm_voice": (PictogramCategory.CARRIER_COMB, "NFM-Voice-Carrier"),
+    "am_voice": (PictogramCategory.CARRIER_COMB, "AM-Voice-Sideband"),
+    "atsc_tv": (PictogramCategory.RASTER, "ATSC-8VSB-6MHz"),
+    "fsk_pager": (PictogramCategory.BURST_MATRIX, "FSK-Pager-Packet"),
+    "ism_telemetry": (PictogramCategory.BURST_MATRIX, "ISM-OOK-FSK-Telem"),
+    "adsb_pulse": (PictogramCategory.BURST_MATRIX, "ADS-B-ModeS-Pulse"),
+    "glyph": (PictogramCategory.GLYPH, "Glyph/Symbol-glyph"),
+    "geometric": (PictogramCategory.GEOMETRIC, "Geometric-Sweep-Chirp"),
+    "noise_reject": (PictogramCategory.ANOMALY, "Noise-Reject-Cluster"),
+    # Legacy 6-class compatibility
+    "raster": (PictogramCategory.RASTER, "RasterArt-Pattern-raster"),
+    "tone_matrix": (PictogramCategory.BURST_MATRIX, "Tone-Burst-Matrix"),
+    "carrier_comb": (PictogramCategory.CARRIER_COMB, "Carrier-Comb"),
+}
+
+
 class WaterfallPictogramExtractor:
     """
     Maintains a rolling 2D waterfall buffer and segments 2D candidate spectrogram ROIs.
@@ -145,6 +304,12 @@ class WaterfallPictogramExtractor:
 
     def set_row_interval(self, interval_s: float) -> None:
         self._row_interval_s = max(0.001, interval_s)
+
+    def reset(self) -> None:
+        """Clear the rolling waterfall buffer between distinct candidate frequencies."""
+        with self._lock:
+            self._waterfall.fill(-100.0)
+            self._row_count = 0
 
     def push_row(self, dbm_row: list[float] | np.ndarray) -> None:
         """Push a 1D frequency power slice into the rolling waterfall."""
@@ -211,12 +376,21 @@ class WaterfallPictogramExtractor:
             if h <= 2 and w >= int(self.cols * 0.75):
                 continue
 
-            roi_patch = wf[r : r + h, c : c + w]
-            roi_snr = float(np.max(snr_map[r : r + h, c : c + w]))
-            roi_peak = float(np.max(roi_patch))
+            # Preserve physical frequency scale across narrow/wide signals (minimum 48-col = 375 kHz context)
+            min_ctx_c = min(self.cols, max(w + max(4, w // 4), 48))
+            mid_c = c + w // 2
+            pc0 = max(0, min(self.cols - min_ctx_c, mid_c - min_ctx_c // 2))
+            pc1 = min(self.cols, pc0 + min_ctx_c)
+            pr0 = max(0, r - 2)
+            pr1 = min(self.rows, r + h + 2)
 
+            roi_patch = wf[pr0:pr1, pc0:pc1]
+            roi_snr = float(np.max(snr_map[r : r + h, c : c + w]))
+            roi_peak = float(np.max(wf[r : r + h, c : c + w]))
+
+            dyn_range = max(16.0, (roi_peak - global_floor) + 4.0)
             norm = np.clip(
-                (roi_patch - global_floor) / max(self.snr_threshold_db * 2.5, 15.0) * 255.0,
+                (roi_patch - global_floor) / dyn_range * 255.0,
                 0,
                 255,
             ).astype(np.uint8)
@@ -254,7 +428,8 @@ class HailoPictogramClassifier:
     """
     Manages the Hailo-8 PCIe AI coprocessor (26 TOPS) and runs deep neural inference
     to classify RF spectrogram pictograms and modulation footprints using hardware
-    backbone feature extraction paired with a calibrated transfer classification head.
+    backbone feature extraction fused with 16-D physical spectral morphology features
+    and a calibrated multi-layer classification head.
     """
 
     DEFAULT_HEF = _resolve_default_hef()
@@ -297,6 +472,14 @@ class HailoPictogramClassifier:
         self._w2: Optional[np.ndarray] = None
         self._b2: Optional[np.ndarray] = None
 
+        # Optional trained 16-D CPU fallback MLP weights stored in NPZ
+        self._cpu_mean: Optional[np.ndarray] = None
+        self._cpu_std: Optional[np.ndarray] = None
+        self._cpu_w1: Optional[np.ndarray] = None
+        self._cpu_b1: Optional[np.ndarray] = None
+        self._cpu_w2: Optional[np.ndarray] = None
+        self._cpu_b2: Optional[np.ndarray] = None
+
         self._load_head_weights()
 
     def _load_head_weights(self) -> bool:
@@ -315,8 +498,20 @@ class HailoPictogramClassifier:
                 self._b2 = npz["b2"]
                 if "classes" in npz:
                     self._head_classes = [str(c) for c in npz["classes"]]
+                if "cpu_w1" in npz and "cpu_w2" in npz:
+                    self._cpu_mean = npz["cpu_mean"]
+                    self._cpu_std = npz["cpu_std"]
+                    self._cpu_w1 = npz["cpu_w1"]
+                    self._cpu_b1 = npz["cpu_b1"]
+                    self._cpu_w2 = npz["cpu_w2"]
+                    self._cpu_b2 = npz["cpu_b2"]
                 self._head_weights_loaded = True
-                logger.info("Loaded Hailo-8 pictogram classification head from %s", self.weights_path)
+                logger.info(
+                    "Loaded Hailo-8 pictogram classification head (%d classes, dim=%d) from %s",
+                    len(self._head_classes),
+                    int(self._w1.shape[0]),
+                    self.weights_path,
+                )
                 return True
             except Exception as exc:
                 logger.warning("Could not load head weights from %s: %s", self.weights_path, exc)
@@ -333,12 +528,12 @@ class HailoPictogramClassifier:
                 return True
 
             if not HAILO_AVAILABLE:
-                logger.warning("HailoRT Python platform not installed; using CPU heuristic fallback.")
+                logger.warning("HailoRT Python platform not installed; using CPU neural/spectral fallback.")
                 self._is_initialized = self.fallback_ok
                 return self._is_initialized
 
             if not os.path.exists(self.hef_path):
-                logger.warning("HEF model not found at %s; using CPU heuristic fallback.", self.hef_path)
+                logger.warning("HEF model not found at %s; using CPU neural/spectral fallback.", self.hef_path)
                 self._is_initialized = self.fallback_ok
                 return self._is_initialized
 
@@ -388,6 +583,17 @@ class HailoPictogramClassifier:
                 self._is_initialized = self.fallback_ok
                 return self._is_initialized
 
+    def extract_hailo_embedding(self, rgb_224: np.ndarray) -> Optional[np.ndarray]:
+        """Run raw 224x224x3 uint8 tensor on Hailo-8 NPU and return flattened float32 embedding."""
+        if not self._is_initialized:
+            self.initialize()
+        if not self._is_hardware_active or self._infer_pipeline is None:
+            return None
+        with self._lock:
+            in_tensor = np.expand_dims(rgb_224, axis=0)
+            res = self._infer_pipeline.infer({self._input_name: in_tensor})
+            return np.asarray(res[self._output_name][0], dtype=np.float32).reshape(-1)
+
     def _cleanup_hardware(self) -> None:
         if self._infer_pipeline_cm:
             try:
@@ -413,14 +619,25 @@ class HailoPictogramClassifier:
                 pass
             self._vdevice = None
 
-    def _predict_head(self, features: np.ndarray) -> Tuple[str, float, list[dict[str, Any]]]:
-        """Run calibrated BatchNorm + ReLU MLP transfer head over Hailo-8 feature vector."""
+    def _predict_head(
+        self,
+        deep_features: np.ndarray,
+        phys_features: Optional[np.ndarray] = None,
+    ) -> Tuple[str, float, list[dict[str, Any]]]:
+        """Run calibrated BatchNorm + ReLU MLP transfer head over Hailo-8 + physical RF features."""
         if not self._head_weights_loaded:
             self._load_head_weights()
 
+        flat_deep = np.asarray(deep_features, dtype=np.float32).reshape(-1)
         if self._head_weights_loaded and self._w1 is not None and self._w2 is not None:
+            expected_dim = int(self._w1.shape[0])
+            if expected_dim == len(flat_deep) + 16 and phys_features is not None:
+                feat_vec = np.concatenate([flat_deep, phys_features.astype(np.float32)], axis=0)
+            else:
+                feat_vec = flat_deep[:expected_dim]
+
             x_norm = (
-                (features - self._bn_mean) / np.sqrt(self._bn_var + self._bn_eps) * self._bn_weight
+                (feat_vec - self._bn_mean) / np.sqrt(self._bn_var + self._bn_eps) * self._bn_weight
                 + self._bn_bias
             )
             h1 = np.maximum(0.0, np.dot(x_norm, self._w1) + self._b1)
@@ -436,9 +653,32 @@ class HailoPictogramClassifier:
             best_idx = int(top_indices[0])
             return self._head_classes[best_idx], float(probs[best_idx]), candidates
 
-        top_idx = int(np.argmax(features))
-        conf = float(features[top_idx])
+        top_idx = int(np.argmax(flat_deep))
+        conf = float(flat_deep[top_idx])
         return "glyph", min(0.99, max(0.40, conf)), [{"class": "glyph", "score": conf}]
+
+    def _predict_cpu_fallback(self, phys_features: np.ndarray, roi: PictogramROI) -> Tuple[str, float, list[dict[str, Any]]]:
+        """Run trained 16-D spectral MLP head if available, else deterministic spectral heuristic."""
+        if self._cpu_w1 is not None and self._cpu_w2 is not None and self._cpu_mean is not None and self._cpu_std is not None:
+            x_norm = (phys_features - self._cpu_mean) / (self._cpu_std + 1e-5)
+            h1 = np.maximum(0.0, np.dot(x_norm, self._cpu_w1) + self._cpu_b1)
+            logits = np.dot(h1, self._cpu_w2) + self._cpu_b2
+            exp_l = np.exp(logits - np.max(logits))
+            probs = exp_l / np.sum(exp_l)
+            top_indices = np.argsort(probs)[::-1]
+            candidates = [
+                {"class": self._head_classes[idx], "score": round(float(probs[idx]), 4)}
+                for idx in top_indices
+            ]
+            best_idx = int(top_indices[0])
+            return self._head_classes[best_idx], float(probs[best_idx]), candidates
+
+        aspect = roi.width_bins / max(roi.height_rows, 1)
+        if 0.5 <= aspect <= 2.0:
+            return "glyph", 0.78, [{"class": "glyph", "score": 0.78}]
+        if aspect > 2.5:
+            return "geometric", 0.74, [{"class": "geometric", "score": 0.74}]
+        return "nfm_voice", 0.72, [{"class": "nfm_voice", "score": 0.72}]
 
     def classify_roi(
         self,
@@ -453,9 +693,9 @@ class HailoPictogramClassifier:
         lat_ms = 0.0
         used_hw = False
         top_candidates: list[dict[str, Any]] = []
-        category = PictogramCategory.ANOMALY
-        label = "Unclassified Anomaly"
+        best_class = "nfm_voice"
         confidence = 0.50
+        phys_feats = compute_roi_physical_features(roi)
 
         if self._is_hardware_active and self._infer_pipeline is not None:
             try:
@@ -464,51 +704,23 @@ class HailoPictogramClassifier:
                     t_inf_start = time.perf_counter()
                     res = self._infer_pipeline.infer({self._input_name: in_tensor})
                     lat_ms = (time.perf_counter() - t_inf_start) * 1000.0
-                    deep_features = res[self._output_name][0]
+                    deep_features = np.asarray(res[self._output_name][0], dtype=np.float32).reshape(-1)
                     used_hw = True
 
-                best_class, confidence, top_candidates = self._predict_head(deep_features)
-
-                category_map = {
-                    "glyph": PictogramCategory.GLYPH,
-                    "raster": PictogramCategory.RASTER,
-                    "geometric": PictogramCategory.GEOMETRIC,
-                    "tone_matrix": PictogramCategory.BURST_MATRIX,
-                    "carrier_comb": PictogramCategory.CARRIER_COMB,
-                    "noise_reject": PictogramCategory.ANOMALY,
-                }
-                category = category_map.get(best_class, PictogramCategory.ANOMALY)
-
-                label_map = {
-                    "glyph": f"Glyph/Symbol-{best_class}",
-                    "raster": f"RasterArt-Pattern-{best_class}",
-                    "geometric": f"Geometric-Sweep-{best_class}",
-                    "tone_matrix": f"Tone-Burst-Matrix-{best_class}",
-                    "carrier_comb": f"Carrier-Comb-{best_class}",
-                    "noise_reject": "Noise-Reject-Cluster",
-                }
-                label = label_map.get(best_class, f"Pictogram-{best_class}")
+                best_class, confidence, top_candidates = self._predict_head(deep_features, phys_feats)
 
             except Exception as ex:
                 logger.warning("Hailo-8 hardware inference pass failed, falling back: %s", ex)
                 used_hw = False
 
         if not used_hw:
+            best_class, confidence, top_candidates = self._predict_cpu_fallback(phys_feats, roi)
             lat_ms = (time.perf_counter() - t0) * 1000.0
-            aspect = roi.width_bins / max(roi.height_rows, 1)
-            if 0.5 <= aspect <= 2.0:
-                category = PictogramCategory.GLYPH
-                label = f"SimGlyph-A{int(roi.area)}"
-                confidence = 0.78
-            elif aspect > 2.5:
-                category = PictogramCategory.GEOMETRIC
-                label = "SimGeometric-Chirp"
-                confidence = 0.72
-            else:
-                category = PictogramCategory.CARRIER_COMB
-                label = "SimCarrier-Comb"
-                confidence = 0.70
-            top_candidates = [{"class": "carrier_comb", "score": confidence}]
+
+        category, label = NEURAL_CLASS_SEMANTICS.get(
+            best_class,
+            (PictogramCategory.ANOMALY, f"Pictogram-{best_class}"),
+        )
 
         now = time.time()
         iso = datetime.datetime.fromtimestamp(now, datetime.timezone.utc).isoformat()

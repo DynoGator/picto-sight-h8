@@ -221,12 +221,68 @@ class SDRResourceArbiter:
         self._hardware_present = False
         self._was_gqrx_running = False
         self._last_usb_reset_ts = 0.0
+        self._aux_stoppers: Dict[str, Callable[[], None]] = {}
 
         # Initial passive sysfs discovery (zero USB traffic)
         present, ser, _, _ = detect_hackrf_sysfs()
         self._hardware_present = present
         if ser:
             self._serial = ser
+
+    def register_aux_stopper(self, name: str, stop_fn: Callable[[], None]) -> None:
+        """Registers a cleanup callback for auxiliary SDR receivers (TV demod, Live ADS-B)."""
+        with self._mutex:
+            self._aux_stoppers[name] = stop_fn
+
+    def stop_aux_receivers(self, except_name: str = "") -> None:
+        """Cleanly stops any active auxiliary SDR receivers before handing off HackRF One."""
+        with self._mutex:
+            items = [(k, fn) for k, fn in self._aux_stoppers.items() if k != except_name]
+        for name, fn in items:
+            try:
+                fn()
+            except Exception as exc:
+                logger.debug("Aux receiver stopper %s note: %s", name, exc)
+
+    def prepare_for_aux_receiver(
+        self,
+        owner_tag: str,
+        detail: str,
+        progress_cb: Optional[Callable[[str, float], None]] = None,
+    ) -> Tuple[bool, str]:
+        """
+        Arbitrates exclusive 1-at-a-time HackRF One ownership for Broadcast TV, Live ADS-B,
+        or short telemetry captures. Stops Gqrx and any competing auxiliary receiver cleanly.
+        """
+        with self._mutex:
+            if self._scanner_active:
+                return False, "Smart Scanner is currently sweeping. Wait for scan completion or click STOP."
+        self.stop_aux_receivers(except_name=owner_tag)
+        if self.is_gqrx_running():
+            self.stop_gqrx_cleanly(progress_cb=progress_cb)
+        self._terminate_stray_hackrf_cli()
+        present, ser, _, _ = detect_hackrf_sysfs()
+        if not present:
+            with self._mutex:
+                self._owner = "FAULT"
+                self._detail = "HackRF One (1d50:6089) not detected on USB bus"
+            return False, "HackRF One not detected on USB bus."
+        with self._mutex:
+            if ser:
+                self._serial = ser
+            self._hardware_present = True
+            self._owner = owner_tag
+            self._detail = detail
+            self._handoff_pct = 100.0
+        return True, self._serial
+
+    def release_aux_receiver(self, owner_tag: str) -> None:
+        """Releases HackRF One ownership held by an auxiliary receiver back to IDLE."""
+        with self._mutex:
+            if self._owner == owner_tag:
+                self._owner = "IDLE"
+                self._detail = f"HackRF One Ready ({self._serial[-6:] or 'USB'})"
+                self._handoff_pct = 100.0
 
     # ------------------------------------------------------------------
     # Passive Inspection & Status (Zero USB Bus Contention)
@@ -296,7 +352,7 @@ class SDRResourceArbiter:
                 self._detail = "HackRF One unplugged / not on USB bus"
                 return False, self._detail
             if not deep_usb_open:
-                if self._owner not in ("GQRX_LIVE", "GQRX_TUNING", "RESETTING_USB"):
+                if self._owner not in ("GQRX_LIVE", "GQRX_TUNING", "RESETTING_USB", "TV_DEMOD", "ADSB_LIVE", "TELEM_DECODE"):
                     self._owner = "IDLE"
                     self._detail = f"HackRF One Ready ({self._serial[-6:] or f'{bus}:{dev}'})"
                 return True, self._detail
@@ -353,6 +409,17 @@ class SDRResourceArbiter:
                 detail = self._detail
                 pct = 100.0
                 online = True
+            elif self._owner in ("TV_DEMOD", "ADSB_LIVE", "TELEM_DECODE"):
+                owner = self._owner
+                label_map = {
+                    "TV_DEMOD": "SDR: LIVE TV RX",
+                    "ADSB_LIVE": "SDR: ADS-B 1090",
+                    "TELEM_DECODE": "SDR: TELEM RX",
+                }
+                badge = label_map.get(owner, f"SDR: {owner}")
+                detail = self._detail
+                pct = self._handoff_pct
+                online = True
             elif self._owner == "RESETTING_USB":
                 owner = self._owner
                 badge = "SDR: USB SELF-HEAL..."
@@ -405,6 +472,7 @@ class SDRResourceArbiter:
                     progress_cb("Closing Gqrx prior to HackRF USB bus reset...", 20.0)
                 self.stop_gqrx_cleanly()
 
+            self.stop_aux_receivers()
             self._terminate_stray_hackrf_cli()
 
             present, ser, bus, dev = detect_hackrf_sysfs()
@@ -596,6 +664,7 @@ class SDRResourceArbiter:
             if self.is_gqrx_running():
                 self.stop_gqrx_cleanly(progress_cb=progress_cb)
 
+            self.stop_aux_receivers()
             self._terminate_stray_hackrf_cli()
 
             verified = False
@@ -696,6 +765,7 @@ class SDRResourceArbiter:
             except Exception:
                 pass
 
+            self.stop_aux_receivers()
             self._terminate_stray_hackrf_cli()
             sanitize_gqrx_crash_flags()
 

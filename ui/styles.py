@@ -120,7 +120,8 @@ QPushButton#navTabBtn {{
     background-color: #0e1726;
     border: 1px solid #1e3250;
     border-radius: 5px;
-    padding: 5px 8px;
+    padding: {"4px 4px" if compact else "5px 8px"};
+    font-size: {"10px" if compact else "12px"};
     color: #94a3b8;
     font-weight: 700;
 }}
@@ -222,9 +223,9 @@ QPushButton#btnFilterPill {{
     border: 1px solid #1e3a5f;
     border-radius: 4px;
     color: #94a3b8;
-    font-size: 11px;
+    font-size: {"10px" if compact else "11px"};
     font-weight: 700;
-    padding: 3px 8px;
+    padding: {"2px 6px" if compact else "3px 8px"};
 }}
 QPushButton#btnFilterPill:hover {{
     background-color: #14243b;
@@ -242,9 +243,9 @@ QPushButton#btnFilterVoiceBc {{
     border: 1px solid #065f46;
     border-radius: 4px;
     color: #6ee7b7;
-    font-size: 11px;
+    font-size: {"10px" if compact else "11px"};
     font-weight: 800;
-    padding: 3px 8px;
+    padding: {"2px 6px" if compact else "3px 8px"};
 }}
 QPushButton#btnFilterVoiceBc:hover {{
     background-color: #064e3b;
@@ -254,6 +255,26 @@ QPushButton#btnFilterVoiceBc:hover {{
 QPushButton#btnFilterVoiceBc:checked {{
     background-color: #047857;
     border: 1px solid #34d399;
+    color: #ffffff;
+}}
+
+QPushButton#btnFilterTvData {{
+    background-color: #1e1038;
+    border: 1px solid #6d28d9;
+    border-radius: 4px;
+    color: #ddd6fe;
+    font-size: {"10px" if compact else "11px"};
+    font-weight: 800;
+    padding: {"2px 6px" if compact else "3px 8px"};
+}}
+QPushButton#btnFilterTvData:hover {{
+    background-color: #2e1065;
+    border-color: #a78bfa;
+    color: #ffffff;
+}}
+QPushButton#btnFilterTvData:checked {{
+    background-color: #5b21b6;
+    border: 1px solid #c4b5fd;
     color: #ffffff;
 }}
 

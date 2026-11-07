@@ -5,10 +5,10 @@
 [![NPU: Hailo-8 26 TOPS](https://img.shields.io/badge/NPU-Hailo--8%2026%20TOPS%20PCIe-00e676.svg)](#layer-3--1000-mhz-multi-frame-hailo-8-ai-pictogram-classification)
 [![SDR: HackRF One](https://img.shields.io/badge/SDR-HackRF%20One%20(1--6000%20MHz)-ffb300.svg)](#strict-1-at-a-time-sdr-arbiter--non-root-usb-self-healing)
 [![Receiver: Gqrx 2.17+](https://img.shields.io/badge/Receiver-Gqrx%202.17%2B%20Auto--Tuner-7c4dff.svg)](#native-gqrx-217-profile-synthesis--verified-live-tuning)
-[![Demod: rtl--433 / readsb / multimon](https://img.shields.io/badge/Demod-rtl--433%20%7C%20readsb%20%7C%20w--scan-00b0ff.svg)](#multi-tool-demodulation-engine--telemetry-tv--voice-data)
-[![Tests: 35 Passing](https://img.shields.io/badge/Tests-35%2F35%20Passing-brightgreen.svg)](#verification--test-suite)
+[![Demod: ATSC TV / ADS--B / rtl--433](https://img.shields.io/badge/Demod-ATSC%20TV%20%7C%20ADS--B%20%7C%20rtl--433%20%7C%20multimon-00b0ff.svg)](#multi-tool-demodulation-engine--telemetry-tv--voice-data)
+[![Tests: 42 Passing](https://img.shields.io/badge/Tests-42%2F42%20Passing-brightgreen.svg)](#verification--test-suite)
 
-**Picto-Sight H8** is a production-grade, hardware-accelerated **AI Smart RF Scanner, Multi-Frame Spectrogram Pictogram Classifier, and Automated Gqrx SIGINT Controller** built for **Raspberry Pi 5** equipped with a **Hailo-8 (26 TOPS PCIe) AI Accelerator**, **HackRF One SDR**, and **USB u-blox GNSS** receiver.
+**Picto-Sight H8** is a production-grade, hardware-accelerated **AI Smart RF Scanner, 10-Class Spectrogram Pictogram Classifier (`97.4%` Hailo-8 NPU validation accuracy), Broadcast TV Video/Audio Receiver, Live 1090 MHz ADS-B Tactical Radar, and Automated Gqrx SIGINT Controller** built for **Raspberry Pi 5** equipped with a **Hailo-8 (26 TOPS PCIe) AI Accelerator**, **HackRF One SDR**, and **USB u-blox GNSS** receiver.
 
 It executes a **4-stage multi-layer zoom-refinement RF scanning loop**—sweeping from wideband spectrum overview down to **1.000 MHz bandwidth** with **$\ge 3$ to $5$ independent 2D spectrogram frames per candidate carrier** classified on the Hailo-8 NPU—and produces a **numerically ordered, 1-click/1-tap frequency table** plus **reboot-persistent GPS Location Profiles** that configure, launch, and live-tune **Gqrx** with calibrated LNA/VGA gains, modulation/passband filters, waterfall floor/ceiling bounds, squelch, and live PipeWire audio.
 
@@ -70,9 +70,9 @@ flowchart TD
 - **Stage 1 — Layer 1 Wideband Overview**: Sweeps the selected preset or custom span (`1 MHz – 6000 MHz` supported on HackRF One) using `SIGINT`-safe `hackrf_sweep` orchestration, computes a robust 20th-percentile spectral noise floor, enforces user-configurable **Min SNR** and **Min Peak Power** gates, and cross-references regional bandplans (`FCC_US`, `ITU_R1`, `ITU_R3`) to flag legally demodulatable signals.
 - **Stage 2 — Layer 2 `4.0 MHz` Fine-Zoom Verification**: Re-sweeps localized `4.0 MHz` neighborhoods at `100 kHz` resolution (`1–6000 MHz`), merges multi-bin wideband skirts, and snaps center frequencies to regional channel rasters (`200 kHz` odd-tenth FM broadcast channels in North America, `25 kHz` VHF Airband/Marine/NOAA, `12.5 kHz` UHF LMR/Amateur).
 - **Stage 3 — Layer 3 `1.000 MHz` Multi-Frame Hailo-8 AI Pictogram Classification**:
-  - Captures raw `2.0 MSPS` 8-bit quadrature IQ (`hackrf_transfer`, with automatic `-150 kHz` digital LO offset below `10 MHz` to avoid HackRF MAX2837 zero-IF DC spikes) and slices **at least 3 independent `1.000 MHz` 64×128 Hann-windowed STFT spectrogram frames** (`3` frames in Quick/Custom mode, `5` frames in Deep mode).
-  - Extracts 2D spectral-floor carrier ROIs and rolling waterfall transient ROIs (`core/hailo_pictogram.py`), normalizes them into `224×224×3` Viridis tensors, and executes hardware-accelerated feature extraction on `/dev/hailo0` (**Hailo-8 26 TOPS PCIe**) paired with the bundled BatchNorm + MLP spectrogram transfer head (`models/hailo_pictogram_head_weights.npz`).
-  - Fuses neural class probabilities (`carrier_comb`, `tone_matrix`, `geometric`, `glyph`, `raster`, `noise_reject`) across all evaluated frames with physical-layer IQ measurements (99% Occupied Bandwidth, instantaneous FM phase deviation vs. AM envelope depth, duty cycle) while automatically rejecting unmodulated internal clock spurs (`10 / 20 / 25 / 32 / 40 / 48 / 50 / 80 / 100 / 125 MHz` integer harmonics).
+  - Captures raw `2.0 MSPS` 8-bit quadrature IQ (`hackrf_transfer`, with automatic `-150 kHz` digital LO offset below `10 MHz` to avoid HackRF MAX2837 zero-IF DC spikes and `lo + 350 kHz` pilot-edge framing on 6 MHz ATSC TV channels) and slices **at least 3 independent `1.000 MHz` 64×128 Hann-windowed STFT spectrogram frames** (`3` frames in Quick/Custom mode, `5` frames in Deep mode).
+  - Extracts scale-preserving 2D spectral-floor carrier ROIs, rolling waterfall transient ROIs, and a 16-dimensional physical RF spectrogram morphology vector (`core/hailo_pictogram.py`), normalizes patches into `224×224×3` Viridis tensors, and executes hardware-accelerated feature extraction on `/dev/hailo0` (**Hailo-8 26 TOPS PCIe**) paired with the upgraded 10-class `1016-D` BatchNorm + MLP spectrogram transfer head (`models/hailo_pictogram_head_weights.npz`, **97.4% held-out validation accuracy**).
+  - Fuses 10-class neural probabilities (`wfm_stereo`, `nfm_voice`, `am_voice`, `atsc_tv`, `fsk_pager`, `ism_telemetry`, `adsb_pulse`, `glyph`, `geometric`, `noise_reject`) across all evaluated frames with physical-layer IQ measurements (99% Occupied Bandwidth, instantaneous FM phase deviation vs. AM envelope depth, duty cycle) while automatically rejecting unmodulated internal clock spurs (`10 / 20 / 25 / 32 / 40 / 48 / 50 / 80 / 100 / 125 MHz` integer harmonics).
 - **Stage 4 — Numerical Refinement & Atomic Location Profiles**:
   - Orders verified signals strictly in **ascending numerical frequency order**, renders side-by-side 3-to-5-frame annotated spectrogram PNG strips, atomically persists a timestamped **Location Profile** (`profiles/<Locality>_<Grid>_<YYYY-MM-DD_HH-MM-SS>_<MODE>.json`), exports spec-compliant two-table Gqrx `bookmarks.csv` files, and **unlocks** the UI signal table (`🔒 LIST LOCKED` $\rightarrow$ `🔓 CLICK ANY ROW TO TUNE GQRX`).
 
@@ -95,15 +95,15 @@ flowchart TD
 - **1-Click Filter Toolbar**: Filter pills above the signals table (`[ 📻 Voice Broadcast ]`, `[ 🗣️ All Voice ]`, `[ 🌐 All Signals ]`, and live search) let the operator instantly isolate voice stations with 1 click or keyboard shortcut `V`.
 - **Gqrx Bookmarks Export**: Voice broadcasts are tagged with dedicated `#10b981` (emerald green) bookmarks for instant discovery in Gqrx's Pandapter.
 
-### 5. Multi-Tool Demodulation Engine (`core/demod_engine.py`)
-Picto-Sight H8 translates and dispatches classified RF signals directly to specialized software demodulators:
-- **Commercial & Amateur Voice / Broadcast Audio**: Instant 1-click launch and live retuning in **Gqrx 2.17+** with calibrated LNA/VGA gains and DSP passbands.
-- **IoT / ISM Telemetry (433 / 915 / 315 MHz)**: Native hardware decoding via **`rtl_433`** over SoapySDR HackRF (`rtl_433 -d driver=hackrf -f <FREQ>`). Decodes over 200 telemetry protocols including weather stations, TPMS tire pressure sensors, electricity/water smart meters, and remote telemetry sensors.
-- **Digital Broadcast Television**: North American **ATSC 1.0 / ATSC 3.0** channel identification across VHF Low (Ch 2–6), VHF High (Ch 7–13), and UHF (Ch 14–36), calculating exact channel boundaries, center frequencies, and 8VSB pilot carriers (310 kHz above lower edge) paired with **`w_scan_cpp`** and GNU Radio DTV blocks.
-- **Aviation ADS-B Mode-S (1090 MHz)**: Decodes real-time aircraft altitude, flight IDs, squawk codes, and position telemetry via **`readsb`** Mode-S receiver.
-- **Emergency Weather & Pager Data**: POCSAG 512/1200/2400 and Motorola FLEX pager decoding, plus EAS emergency weather alerts via **`multimon-ng`**.
-- **Amateur APRS Packet Radio (144.390 MHz)**: Decodes AX.25 tactical telemetry beacons via **`direwolf`** and `multimon-ng`.
-- **Audio FSK Modems**: Decodes Bell 103/202, RTTY, and NOAA SAME weather alert headers via **`minimodem`**.
+### 5. Multi-Tool Demodulation Engine (`core/demod_engine.py`, `core/tv_demodulator.py`, `core/adsb_receiver.py`)
+Picto-Sight H8 translates and dispatches classified RF signals directly to integrated audio, video, and telemetry receivers under strict 1-at-a-time SDR arbitration:
+- **Commercial, Public Safety, CB, Rail & Aviation Voice Audio**: Instant 1-click launch and live retuning in **Gqrx 2.17+** with calibrated LNA/VGA gains, DSP passbands, and PipeWire audio.
+- **Broadcast Television Video/Audio & Spectrum Receiver (`core/tv_demodulator.py`, `ui/tv_dialog.py`)**:
+  - **ATSC 1.0 Digital 8VSB Mode**: Streams `8.0 MSPS` HackRF IQ through GNU Radio `dtv.atsc_rx` into localhost UDP MPEG-TS (`127.0.0.1:17355`) with low-latency **`mpv` / `ffplay`** video & AC-3 audio playback, simultaneous `6.0 MHz` RF spectrum display, `+309.441 kHz` 8VSB pilot carrier lock gauge, MER estimation, Southern Colorado station presets (`Ch 25 KOAA`, `Ch 24 KKTV`, `Ch 22 KXRM`, `Ch 19 KRDO`, `Ch 8 KTSC`), VHF/UHF TV band scanner, and 1-tap `8.0 MSPS` Wideband Gqrx handoff.
+  - **Analog NTSC 525-Line CRT Raster Mode**: Real-time envelope-detected 525-line / 29.97 fps luminance raster monitor.
+- **Live 1090 MHz ADS-B Mode-S Tactical Radar (`core/adsb_receiver.py`, `ui/map_widget.py`)**: Continuous `2.4 MSPS` HackRF IQ $\rightarrow$ DC-cancelled `UC8` $\rightarrow$ **`readsb`** pipeline feeding live aircraft callsigns, ICAO hex, altitude, speed, heading vectors, and distance/bearing rings from Penrose, CO (`DM78vj`).
+- **IoT / ISM Telemetry (433 / 915 / 315 MHz)**: Native hardware decoding via **`rtl_433`** over SoapySDR HackRF (`rtl_433 -d driver=hackrf -f <FREQ>`).
+- **Emergency Weather, POCSAG/FLEX Pager & APRS Data**: Channel-filtered `+250 kHz` LO-offset IQ $\rightarrow$ FM discriminator $\rightarrow$ **`multimon-ng`** / **`direwolf`** decoding for POCSAG 512/1200/2400, FLEX, EAS/SAME, and `144.390 MHz` AX.25 APRS packets.
 
 ---
 
@@ -210,28 +210,34 @@ picto-sight-h8/
 ├── launch_scanner.sh                        # Wayland/X11 environment launcher
 ├── autostart_scanner.sh                     # Boot autostart supervisor for Wayland / labwc
 ├── core/
-│   ├── bandplans.py                         # FCC / ITU-R1 / ITU-R3 bandplans, channel snapping & FFT bounds
-│   ├── demod_engine.py                      # Multi-tool demodulator dispatcher (rtl_433, readsb, multimon-ng, w_scan_cpp)
+│   ├── adsb_receiver.py                     # Live 1090 MHz HackRF (2.4 MSPS -> UC8 -> readsb) aircraft receiver
+│   ├── bandplans.py                         # FCC / ITU-R1 / ITU-R3 bandplans, Fremont/Penrose priors & channel snapping
+│   ├── demod_engine.py                      # Multi-tool demodulator dispatcher (rtl_433, readsb, multimon-ng, ATSC)
 │   ├── gps_engine.py                        # USB u-blox GNSS NMEA + gpsd & offline locality cache
-│   ├── gqrx_controller.py                   # Native Gqrx 2.17+ INI synthesizer, PipeWire & TCP 7356 controller
+│   ├── gqrx_controller.py                   # Native Gqrx 2.17+ INI synthesizer (TV_WIDE / WIDE / NARROW) & TCP 7356
 │   ├── hackrf_engine.py                     # SIGINT-safe HackRF sweep, 2 MSPS IQ capture & clock-spur filter
-│   ├── hailo_pictogram.py                   # Hailo-8 (26 TOPS PCIe) VDevice driver, ROI extractor & MLP head
+│   ├── hailo_pictogram.py                   # Hailo-8 (26 TOPS PCIe) VDevice driver, 16-D RF features & 10-class MLP head
 │   ├── pictogram_engine.py                  # Multi-frame (>=3..5 x 1 MHz) neural + IQ modulation fusion engine
 │   ├── profile_organizer.py                 # Numerical frequency organizer, atomic JSON & Gqrx CSV exporter
 │   ├── scanner_pipeline.py                  # 4-stage multi-layer zoom-refinement scanning orchestrator
-│   └── sdr_arbiter.py                       # Cross-process flock SDR arbiter, sysfs probe & USBDEVFS_RESET healer
+│   ├── sdr_arbiter.py                       # Cross-process flock SDR arbiter (Scan / Gqrx / TV / ADS-B) & USB healer
+│   └── tv_demodulator.py                    # Live 8 MSPS GNU Radio ATSC 8VSB + mpv video & Analog NTSC raster receiver
 ├── ui/
-│   ├── main_window.py                       # Adaptive 5" DSI Touch Deck <-> 1080p+ HDMI 4-Pane SIGINT Studio
-│   ├── styles.py                            # High-contrast dark tactical Qt6 stylesheet
+│   ├── main_window.py                       # Adaptive 5" DSI Touch Deck <-> 1080p+ HDMI SIGINT Studio + UI persistence
+│   ├── map_widget.py                        # Live 1090 MHz ADS-B tactical radar scope & decoded telemetry feed
+│   ├── styles.py                            # High-contrast dark tactical Qt6 stylesheet (5" DSI & HDMI scaled)
+│   ├── tv_dialog.py                         # Broadcast Television Receiver dialog (Live Video + 6 MHz FFT + NTSC CRT)
 │   └── widgets.py                           # Wideband RF trace, 3-frame AI waterfall strip & segmented gauges
+├── scripts/
+│   └── train_hailo_rf_classifier.py         # Physics-grounded 2.0 MSPS IQ -> Hailo-8 10-class transfer head trainer
 ├── models/
-│   └── hailo_pictogram_head_weights.npz     # Calibrated BatchNorm + MLP spectrogram transfer-head weights
+│   └── hailo_pictogram_head_weights.npz     # 10-class Hailo-8 + 16-D RF MLP spectrogram weights (97.4% val accuracy)
 ├── icons/                                   # Custom SVG vector application & scan-mode icons
 ├── desktop/                                 # Parameterized XDG .desktop & boot autostart templates
 ├── docs/images/                             # High-resolution HDMI Studio & 5" DSI Touch screenshots
-├── profiles/                                # Runtime saved Location Profiles (gitignored for GPS privacy)
+├── profiles/                                # Runtime saved Location Profiles & ui_settings.json (gitignored)
 ├── export/                                  # Runtime Gqrx bookmarks & JSON exports (gitignored)
-└── tests/                                   # 31 unit & live hardware integration tests
+└── tests/                                   # 42 unit & live hardware integration tests
 ```
 
 ---

@@ -506,6 +506,22 @@ class HackRFScannerEngine:
         return noise_floor, deduped
 
     @staticmethod
+    def _atsc_channel_key(freq_hz: float, region: str = "US") -> Optional[int]:
+        """Returns integer ATSC 6 MHz channel number if freq_hz lies inside a US broadcast TV band."""
+        if region not in ("US", "CA", "MX"):
+            return None
+        f = float(freq_hz)
+        if 54_000_000 <= f < 72_000_000:
+            return 2 + int((f - 54_000_000) // 6_000_000)
+        if 76_000_000 <= f < 87_800_000:
+            return 5 + int((f - 76_000_000) // 6_000_000)
+        if 174_000_000 <= f < 216_000_000:
+            return 7 + int((f - 174_000_000) // 6_000_000)
+        if 470_000_000 <= f < 608_000_000:
+            return 14 + int((f - 470_000_000) // 6_000_000)
+        return None
+
+    @staticmethod
     def _deduplicate_by_band_spacing(
         spikes: List[DetectedSignalSpike],
         region: str = "US",
@@ -513,11 +529,20 @@ class HackRFScannerEngine:
         if not spikes:
             return []
 
-        # Process strongest spikes first so sidebands merge into true main carrier
+        # Process strongest spikes first so sidebands/shelf ripples merge into true main carrier/pilot
         by_strength = sorted(spikes, key=lambda s: s.peak_dbm, reverse=True)
         kept: List[DetectedSignalSpike] = []
+        kept_tv_channels: set[int] = set()
 
         for cand in by_strength:
+            tv_ch = HackRFScannerEngine._atsc_channel_key(cand.center_freq_hz, region=region)
+            if tv_ch is not None:
+                if tv_ch in kept_tv_channels:
+                    continue
+                kept_tv_channels.add(tv_ch)
+                kept.append(cand)
+                continue
+
             if 87_800_000 <= cand.center_freq_hz <= 108_100_000:
                 min_guard_hz = 165_000.0 if region in ("US", "CA", "MX") else 85_000.0
             elif 118_000_000 <= cand.center_freq_hz <= 137_000_000:
@@ -709,14 +734,30 @@ class HackRFScannerEngine:
             return self._simulate_iq_frames(center_freq_hz, target_frames, rows_per_frame, cols_per_frame)
 
         sample_rate = 2_000_000
+        # For ATSC 6 MHz TV channels, place the 1.000 MHz inspection window across [lo - 150 kHz, lo + 850 kHz]
+        # (centered at lo + 350 kHz) so it simultaneously captures 150 kHz of lower guard-band thermal floor,
+        # the exact +309.441 kHz 8VSB pilot tone, and 850 kHz of the flat-top digital multiplex shelf!
+        capture_center_hz = float(center_freq_hz)
+        tv_ch = self._atsc_channel_key(center_freq_hz)
+        if tv_ch is not None:
+            if 2 <= tv_ch <= 4:
+                tv_lo = 54_000_000.0 + (tv_ch - 2) * 6_000_000.0
+            elif 5 <= tv_ch <= 6:
+                tv_lo = 76_000_000.0 + (tv_ch - 5) * 6_000_000.0
+            elif 7 <= tv_ch <= 13:
+                tv_lo = 174_000_000.0 + (tv_ch - 7) * 6_000_000.0
+            else:
+                tv_lo = 470_000_000.0 + (tv_ch - 14) * 6_000_000.0
+            capture_center_hz = tv_lo + 350_000.0
+
         # For low-HF (< 1.5 MHz), place LO +250 kHz above target so LO >= 1.25 MHz (within HackRF 1 MHz min limit)
-        if center_freq_hz < 1_500_000.0:
+        if capture_center_hz < 1_500_000.0:
             signed_target_offset_hz = -250_000
-            lo_freq_hz = max(1_000_000, int(round(center_freq_hz + 250_000)))
+            lo_freq_hz = max(1_000_000, int(round(capture_center_hz + 250_000)))
             c_bin_start, c_bin_end = 32, 160
         else:
             signed_target_offset_hz = 250_000
-            lo_freq_hz = max(1_000_000, int(round(center_freq_hz - 250_000)))
+            lo_freq_hz = max(1_000_000, int(round(capture_center_hz - 250_000)))
             c_bin_start, c_bin_end = 96, 224
 
         # Minimum 87,380 complex samples per frame (~43.7 ms/frame -> >= 131 ms total for 3 frames, 220 ms for 5 frames)
@@ -837,6 +878,7 @@ class HackRFScannerEngine:
             frames,
             sample_rate=sample_rate,
             lo_offset_hz=signed_target_offset_hz,
+            is_atsc_tv=(tv_ch is not None),
         )
         return frames, iq_metrics
 
@@ -846,6 +888,7 @@ class HackRFScannerEngine:
         frames: List[np.ndarray],
         sample_rate: int = 2_000_000,
         lo_offset_hz: int = 250_000,
+        is_atsc_tv: bool = False,
     ) -> Dict[str, Any]:
         """
         Derives true calibrated dBFS peak, noise floor, SNR, occupied bandwidth (OBW),
@@ -858,9 +901,10 @@ class HackRFScannerEngine:
         bin_hz = 1_000_000.0 / len(mean_psd)
         mid = len(mean_psd) // 2
 
-        noise_floor_dbfs = float(np.percentile(mean_psd, 20))
-        # Evaluate target signal within central ±110 kHz
-        rad_bins = max(4, int(round(115_000.0 / bin_hz)))
+        # Use 12th percentile when ATSC TV band-edge window is captured (lower 19 bins = guard band)
+        noise_floor_dbfs = float(np.percentile(mean_psd, 12 if is_atsc_tv else 20))
+        # Evaluate target signal within central ±115 kHz (or wider for ATSC pilot+shelf)
+        rad_bins = max(4, int(round((220_000.0 if is_atsc_tv else 115_000.0) / bin_hz)))
         c_lo = max(0, mid - rad_bins)
         c_hi = min(len(mean_psd), mid + rad_bins + 1)
 
@@ -878,13 +922,16 @@ class HackRFScannerEngine:
 
         # Occupied bandwidth (-10 dB skirt relative to peak, bounded above noise_floor + 4.5 dB)
         obw_thresh = max(noise_floor_dbfs + 4.5, peak_dbfs - 10.5)
+        max_rad = len(mean_psd) if is_atsc_tv else int(150_000 / bin_hz)
         b_lo = peak_bin
-        while b_lo > max(0, mid - int(150_000 / bin_hz)) and max_hold_psd[b_lo - 1] >= obw_thresh:
+        while b_lo > max(0, mid - max_rad) and max_hold_psd[b_lo - 1] >= obw_thresh:
             b_lo -= 1
         b_hi = peak_bin
-        while b_hi < min(len(mean_psd) - 1, mid + int(150_000 / bin_hz)) and max_hold_psd[b_hi + 1] >= obw_thresh:
+        while b_hi < min(len(mean_psd) - 1, mid + max_rad) and max_hold_psd[b_hi + 1] >= obw_thresh:
             b_hi += 1
         obw_hz = max(bin_hz, float((b_hi - b_lo + 1) * bin_hz))
+        if is_atsc_tv and float(np.mean(mean_psd[20:] >= noise_floor_dbfs + 3.5)) >= 0.55:
+            obw_hz = 5_380_000.0
 
         # Baseband mix-down of up to 65,520 IQ samples (divisible by 40 and 8) to classify AM vs WFM vs NFM vs CW
         seg_n = (min(65_520, len(iq)) // 40) * 40

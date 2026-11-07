@@ -1,34 +1,34 @@
 """
-Tactical Radar & Telemetry Map Widget for AI-Powered Smart RF Scanner
+Tactical Radar, Live 1090 MHz ADS-B Surveillance & Telemetry Decoder Panel
+==========================================================================
 Renders:
   1. ADS-B 1090 MHz Tactical Radar & Airspace Surveillance Map
      - Centered at Home Base: J St & 13th St, Penrose, CO 81240 (38.4112° N, -105.0366° W, DM78vj)
-     - Concentric range rings (10, 25, 50, 100, 150 NM) with nautical & statute scale
-     - Compass rose & 360-degree radial bearing lines
-     - Local landmarks & transmitters: Fremont County Airport (1V6 Penrose), Pueblo Memorial (KPUB),
-       Colorado Springs (KCOS), Cheyenne Mountain Broadcast Towers, Royal Gorge / Cañon City, US-50
-     - Live aircraft plotting with heading vectors, altitude tags, airspeed, callsigns, squawk, climb/descent
-     - Animated tactical phosphor radar sweep beam
-  2. Live Telemetry Streams:
-     - Decoded POCSAG / FLEX Pager Dispatch Feed (Penrose/Florence Fire, Emergency Alerts)
-     - Decoded APRS AX.25 Tactical Packet Stream (144.390 MHz Ham telemetry & weather beacons)
-     - Decoded ISM IoT Telemetry (433.92 MHz & 915 MHz sensors)
-  3. Instant 1-Click Demodulation Quick-Launch Bar for all Penrose & Fremont County channels.
+     - Concentric range rings (15, 25, 50, 100, 150 NM) + 360° radial bearing lines
+     - Local landmarks & transmitters: Fremont Co Airport (1V6), Pueblo (KPUB),
+       Colorado Springs (KCOS), Cheyenne Mtn TV/FM Towers, Royal Gorge UP Rail, US-50 CB Corridor
+     - Real-time HackRF 2.4 MSPS -> readsb Mode-S / ADS-B live aircraft plotting (plus optional
+       explicitly-labeled [SIM DEMO] mode)
+  2. Thread-Safe Live Telemetry Decoders (Qt pyqtSignal marshaled):
+     - POCSAG / FLEX Pager Dispatch Decoder (multimon-ng)
+     - APRS AX.25 144.390 MHz Packet Decoder (multimon-ng)
+     - ISM 433.92 / 915 MHz Sensor Decoder (rtl_433)
+     - Broadcast TV VHF/UHF Channel & 8VSB Pilot Scanner + Live TV Receiver launcher
+  3. Zero-overflow layout tailored for 5" 800x480 DSI + scalable 1080p HDMI Studio mode,
+     including 1-tap [Split | Radar | Feed] view switching.
 """
 
 from __future__ import annotations
 
 import json
 import math
-import os
 import random
 import threading
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Any, Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF, pyqtSignal
+from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QBrush,
     QColor,
@@ -45,7 +45,6 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QLabel,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
     QSplitter,
     QTableWidget,
@@ -53,6 +52,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from core.adsb_receiver import get_adsb_receiver
 
 # Reference Location: Corner of J St & 13th St, Penrose, CO 81240
 PENROSE_HOME_LAT = 38.4112
@@ -98,7 +99,7 @@ WAYPOINTS_LOCAL: List[TacticalWaypoint] = [
     TacticalWaypoint("1V6", "Fremont Co Airport", 38.4287, -105.1054, "AIRPORT", 122.800, "CTAF 122.8 / AWOS 120.025", "✈️"),
     TacticalWaypoint("PUB", "Pueblo Memorial Airport", 38.2891, -104.4966, "AIRPORT", 119.100, "Tower 119.1 / ATIS 125.25", "✈️"),
     TacticalWaypoint("COS", "Colorado Springs Airport", 38.8058, -104.7008, "AIRPORT", 120.100, "Approach 120.1 / Tower 119.9", "✈️"),
-    TacticalWaypoint("CHEY", "Cheyenne Mtn TV/FM Towers", 38.7428, -104.8828, "TRANSMITTER", 539.000, "ATSC TV Ch 22,24,25,26 / FM", "⛰️"),
+    TacticalWaypoint("CHEY", "Cheyenne Mtn TV/FM Towers", 38.7428, -104.8828, "TRANSMITTER", 539.000, "ATSC TV Ch 19,22,24,25 / FM", "⛰️"),
     TacticalWaypoint("GORG", "Royal Gorge / UP Rail", 38.4328, -105.3255, "RAIL_YARD", 161.490, "UP AAR 92 / Royal Gorge AAR 32", "🚆"),
     TacticalWaypoint("PEN_FD", "Penrose Fire Dept", 38.4258, -105.0044, "TRANSMITTER", 155.880, "Penrose Fire Ops / Paging", "🚒"),
     TacticalWaypoint("US50", "US-50 Trucker Corridor", 38.4220, -105.0200, "CORRIDOR", 27.185, "CB Ch 19 Trucker Highway Calling", "🚛"),
@@ -119,6 +120,7 @@ class AircraftTarget:
     aircraft_type: str
     distance_nm: float = 0.0
     bearing_deg: float = 0.0
+    has_position: bool = True
     history: List[Tuple[float, float]] = field(default_factory=list)
     last_update_ts: float = 0.0
 
@@ -126,7 +128,7 @@ class AircraftTarget:
 @dataclass
 class DecodedMessageRecord:
     timestamp_str: str
-    channel_type: str   # "POCSAG", "APRS", "ISM_433", "ISM_915", "ATSC_TV"
+    channel_type: str   # "ADSB", "POCSAG", "APRS", "ISM_433", "ATSC_TV", "SYSTEM"
     frequency_mhz: float
     source_tag: str
     content: str
@@ -141,26 +143,75 @@ class ADSBRadarMapCanvas(QWidget):
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self.setMinimumSize(280, 260)
+        self.setMinimumSize(210, 175)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMouseTracking(True)
 
         self.home_lat = PENROSE_HOME_LAT
         self.home_lon = PENROSE_HOME_LON
-        self.max_range_nm = 50.0  # Default visible radius in NM (10, 25, 50, 100, 150)
+        self.max_range_nm = 50.0
         self.sweep_angle_deg = 0.0
         self.selected_target: Optional[AircraftTarget] = None
         self.targets: Dict[str, AircraftTarget] = {}
+        self.mode_badge: str = "STANDBY"
+        self.mode_s_msgs: int = 0
+        self.sim_enabled: bool = False
 
-        # Range ring levels in NM
         self.ring_steps = [10.0, 25.0, 50.0, 75.0, 100.0, 150.0]
-
-        # Seed realistic Colorado Front Range airspace traffic (Penrose, COS, PUB corridor)
-        self._init_mock_targets()
 
     def set_home_coords(self, lat: float, lon: float) -> None:
         self.home_lat = lat
         self.home_lon = lon
+        self.update()
+
+    def set_simulation_mode(self, enabled: bool) -> None:
+        self.sim_enabled = enabled
+        self.targets.clear()
+        self.selected_target = None
+        if enabled:
+            self.mode_badge = "SIM DEMO"
+            self._init_mock_targets()
+        else:
+            self.mode_badge = "STANDBY"
+        self.update()
+
+    def update_live_targets(self, parsed_list: List[Dict[str, Any]], total_msgs: int) -> None:
+        self.mode_badge = "LIVE 1090 RF"
+        self.mode_s_msgs = total_msgs
+        fresh_icaos = set()
+        for d in parsed_list:
+            icao = d["icao"]
+            fresh_icaos.add(icao)
+            prev = self.targets.get(icao)
+            hist = list(prev.history) if prev else []
+            if d.get("has_position", False):
+                pt = (float(d["latitude"]), float(d["longitude"]))
+                if not hist or math.hypot(hist[-1][0] - pt[0], hist[-1][1] - pt[1]) > 0.0005:
+                    hist.append(pt)
+                    if len(hist) > 18:
+                        hist.pop(0)
+            self.targets[icao] = AircraftTarget(
+                icao=icao,
+                callsign=d["callsign"],
+                latitude=float(d["latitude"]),
+                longitude=float(d["longitude"]),
+                altitude_ft=int(d["altitude_ft"]),
+                ground_speed_kt=int(d["ground_speed_kt"]),
+                heading_deg=float(d["heading_deg"]),
+                vertical_rate_fpm=int(d["vertical_rate_fpm"]),
+                squawk=str(d["squawk"]),
+                aircraft_type=str(d["aircraft_type"]),
+                distance_nm=float(d["distance_nm"]),
+                bearing_deg=float(d["bearing_deg"]),
+                has_position=bool(d.get("has_position", True)),
+                history=hist,
+                last_update_ts=float(d.get("updated_ts", time.time())),
+            )
+
+        # Prune stale targets not seen in latest readsb window
+        for k in list(self.targets.keys()):
+            if k not in fresh_icaos:
+                del self.targets[k]
         self.update()
 
     def zoom_in(self) -> None:
@@ -186,19 +237,18 @@ class ADSBRadarMapCanvas(QWidget):
 
     def update_sweep_angle(self, delta_deg: float = 2.5) -> None:
         self.sweep_angle_deg = (self.sweep_angle_deg + delta_deg) % 360.0
-        self._simulate_step()
+        if self.sim_enabled:
+            self._simulate_step()
         self.update()
 
     def _init_mock_targets(self) -> None:
         now = time.time()
-        # Realistic air traffic around Pueblo, Colorado Springs, and Fremont County
         seeds = [
             ("A14B20", "UAL1422", 38.6500, -104.8200, 28000, 440, 345.0, 1200, "1200", "B738"),
             ("A89C33", "SWA291", 38.3200, -104.9100, 14500, 310, 195.0, -800, "2411", "B737"),
-            ("AB4102", "FFL3", 38.4500, -105.1500, 7800, 135, 80.0, 0, "1200", "EC35"),  # Flight for Life Medevac
-            ("A32F19", "N1V6CO", 38.4180, -105.0800, 6200, 110, 95.0, 250, "1200", "C172"),   # Fremont Co Airport traffic
-            ("A091FE", "SKW4811", 38.7800, -104.6500, 8900, 210, 350.0, -1100, "3520", "CRJ7"), # COS Approach
-            ("AC3310", "FDX104", 38.2200, -104.4200, 34000, 480, 160.0, 0, "1405", "B763"),    # High-altitude overflight
+            ("AB4102", "FFL3", 38.4500, -105.1500, 7800, 135, 80.0, 0, "1200", "EC35"),
+            ("A32F19", "N1V6CO", 38.4180, -105.0800, 6200, 110, 95.0, 250, "1200", "C172"),
+            ("A091FE", "SKW4811", 38.7800, -104.6500, 8900, 210, 350.0, -1100, "3520", "CRJ7"),
         ]
         for icao, call, lat, lon, alt, spd, hdg, vr, sq, typ in seeds:
             d, b = haversine_distance_bearing_nm(self.home_lat, self.home_lon, lat, lon)
@@ -215,6 +265,7 @@ class ADSBRadarMapCanvas(QWidget):
                 aircraft_type=typ,
                 distance_nm=round(d, 1),
                 bearing_deg=round(b, 1),
+                has_position=True,
                 history=[(lat, lon)],
                 last_update_ts=now,
             )
@@ -222,8 +273,7 @@ class ADSBRadarMapCanvas(QWidget):
     def _simulate_step(self) -> None:
         now = time.time()
         for target in self.targets.values():
-            # Advance position according to ground speed and heading
-            spd_deg_s = (target.ground_speed_kt / 3600.0) / 60.0  # approx degrees per sec
+            spd_deg_s = (target.ground_speed_kt / 3600.0) / 60.0
             rad = math.radians(target.heading_deg)
             target.latitude += spd_deg_s * math.cos(rad) * 0.15
             target.longitude += (spd_deg_s * math.sin(rad) * 0.15) / math.cos(math.radians(target.latitude))
@@ -240,14 +290,15 @@ class ADSBRadarMapCanvas(QWidget):
     def mousePressEvent(self, event: Any) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             cx, cy = self.width() * 0.5, self.height() * 0.5
-            radius_px = min(cx, cy) - 22.0
+            radius_px = min(cx, cy) - 20.0
             px, py = event.position().x(), event.position().y()
 
-            # Find closest aircraft target to click
             best_target: Optional[AircraftTarget] = None
             best_dist_px = 18.0
 
             for target in self.targets.values():
+                if not target.has_position:
+                    continue
                 tx, ty = self._coords_to_screen(target.latitude, target.longitude, cx, cy, radius_px)
                 dist_px = math.hypot(px - tx, py - ty)
                 if dist_px < best_dist_px:
@@ -262,136 +313,128 @@ class ADSBRadarMapCanvas(QWidget):
     def _coords_to_screen(self, lat: float, lon: float, cx: float, cy: float, radius_px: float) -> Tuple[float, float]:
         dist_nm, brg_deg = haversine_distance_bearing_nm(self.home_lat, self.home_lon, lat, lon)
         r = (dist_nm / self.max_range_nm) * radius_px
-        theta = math.radians(brg_deg - 90.0)  # 0 deg is North (up)
+        theta = math.radians(brg_deg - 90.0)
         x = cx + r * math.cos(theta)
         y = cy + r * math.sin(theta)
         return x, y
 
-    def paintEvent(self, event: Any) -> None:
+    def paintEvent(self, _event: Any) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
 
         w, h = self.width(), self.height()
         cx, cy = w * 0.5, h * 0.5
-        radius_px = max(40.0, min(cx, cy) - 22.0)
+        radius_px = max(35.0, min(cx, cy) - 24.0)
 
-        # 1. Background dark radar glass
-        painter.fillRect(0, 0, w, h, QColor("#020617"))  # Deep slate navy
+        painter.fillRect(0, 0, w, h, QColor("#020617"))
 
-        # Subtle dark radar circle backing
         bg_grad = QRadialGradient(cx, cy, radius_px)
         bg_grad.setColorAt(0.0, QColor(6, 24, 38, 240))
         bg_grad.setColorAt(0.7, QColor(3, 14, 24, 240))
         bg_grad.setColorAt(1.0, QColor(1, 7, 13, 255))
         painter.setBrush(QBrush(bg_grad))
-        painter.setPen(QPen(QColor("#0891b2"), 1.5))
+        painter.setPen(QPen(QColor("#0891b2"), 1.4))
         painter.drawEllipse(QPointF(cx, cy), radius_px, radius_px)
 
-        # 2. Concentric Range Rings with NM Labels
+        # Range rings (diagonal -45 deg labels so East axis stays uncluttered)
         ring_pen = QPen(QColor(14, 116, 144, 110), 1.0, Qt.PenStyle.DashLine)
-        label_font = QFont("Monospace", 8, QFont.Weight.Bold)
-        painter.setFont(label_font)
+        painter.setFont(QFont("Monospace", 7, QFont.Weight.Bold))
 
         visible_rings = [r for r in self.ring_steps if r <= self.max_range_nm]
         if not visible_rings or visible_rings[-1] != self.max_range_nm:
             visible_rings.append(self.max_range_nm)
 
+        diag = 0.70710678
         for ring_nm in visible_rings:
             r_px = (ring_nm / self.max_range_nm) * radius_px
             if r_px > 5.0:
                 painter.setPen(ring_pen)
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.drawEllipse(QPointF(cx, cy), r_px, r_px)
+                if r_px >= 24.0:
+                    painter.setPen(QColor("#38bdf8"))
+                    lx = int(cx + r_px * diag - 14)
+                    ly = int(cy - r_px * diag + 10)
+                    painter.drawText(lx, ly, f"{ring_nm:.0f}NM")
 
-                # Distance text on East horizontal spoke
-                painter.setPen(QColor("#38bdf8"))
-                painter.drawText(int(cx + r_px - 28), int(cy - 3), f"{ring_nm:.0f}NM")
-
-        # 3. Compass Bearing Spokes (Every 30 degrees)
+        # Compass spokes
         spoke_pen = QPen(QColor(8, 145, 178, 65), 1.0)
-        cardinal_font = QFont("SansSerif", 8, QFont.Weight.Bold)
-        painter.setFont(cardinal_font)
-
-        cardinals = {0: "N 000°", 90: "E 090°", 180: "S 180°", 270: "W 270°"}
+        painter.setFont(QFont("SansSerif", 7, QFont.Weight.Bold))
+        cardinals = {0: "N", 90: "E", 180: "S", 270: "W"}
         for deg in range(0, 360, 30):
             rad = math.radians(deg - 90.0)
             x1 = cx + (radius_px * 0.15) * math.cos(rad)
             y1 = cy + (radius_px * 0.15) * math.sin(rad)
             x2 = cx + radius_px * math.cos(rad)
             y2 = cy + radius_px * math.sin(rad)
-
             painter.setPen(spoke_pen)
             painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
-
-            # Draw Cardinal Indicators
             if deg in cardinals:
-                tx = cx + (radius_px + 12.0) * math.cos(rad)
-                ty = cy + (radius_px + 12.0) * math.sin(rad)
+                tx = cx + (radius_px + 10.0) * math.cos(rad)
+                ty = cy + (radius_px + 10.0) * math.sin(rad)
                 painter.setPen(QColor("#22d3ee"))
-                painter.drawText(QRectF(tx - 24, ty - 8, 48, 16), Qt.AlignmentFlag.AlignCenter, cardinals[deg])
+                painter.drawText(QRectF(tx - 12, ty - 8, 24, 16), Qt.AlignmentFlag.AlignCenter, cardinals[deg])
 
-        # 4. Animated Phosphor Radar Sweep Beam
-        sweep_rad = math.radians(self.sweep_angle_deg - 90.0)
-        sweep_x = cx + radius_px * math.cos(sweep_rad)
-        sweep_y = cy + radius_px * math.sin(sweep_rad)
+        # Sweep beam when active
+        if self.mode_badge in ("LIVE 1090 RF", "SIM DEMO"):
+            sweep_rad = math.radians(self.sweep_angle_deg - 90.0)
+            sweep_x = cx + radius_px * math.cos(sweep_rad)
+            sweep_y = cy + radius_px * math.sin(sweep_rad)
+            sweep_col = QColor(16, 185, 129, 190) if self.mode_badge == "LIVE 1090 RF" else QColor(245, 158, 11, 170)
+            painter.setPen(QPen(sweep_col, 1.5))
+            painter.drawLine(QPointF(cx, cy), QPointF(sweep_x, sweep_y))
+            sweep_path = QPainterPath()
+            sweep_path.moveTo(cx, cy)
+            sweep_path.arcTo(
+                QRectF(cx - radius_px, cy - radius_px, radius_px * 2, radius_px * 2),
+                -(self.sweep_angle_deg - 90.0),
+                28.0,
+            )
+            sweep_path.closeSubpath()
+            fill_col = QColor(16, 185, 129, 24) if self.mode_badge == "LIVE 1090 RF" else QColor(245, 158, 11, 22)
+            painter.fillPath(sweep_path, fill_col)
 
-        sweep_pen = QPen(QColor(0, 240, 255, 180), 1.5)
-        painter.setPen(sweep_pen)
-        painter.drawLine(QPointF(cx, cy), QPointF(sweep_x, sweep_y))
-
-        # Sweep sector gradient trail
-        sweep_path = QPainterPath()
-        sweep_path.moveTo(cx, cy)
-        trail_rad = math.radians(self.sweep_angle_deg - 120.0)
-        sweep_path.arcTo(QRectF(cx - radius_px, cy - radius_px, radius_px * 2, radius_px * 2), -(self.sweep_angle_deg - 90.0), 30.0)
-        sweep_path.closeSubpath()
-        painter.fillPath(sweep_path, QColor(0, 240, 255, 24))
-
-        # 5. Draw Tactical Waypoints (Airports, Cheyenne Mountain, Penrose Fire, US-50)
-        wp_font = QFont("SansSerif", 7, QFont.Weight.Bold)
-        painter.setFont(wp_font)
-
+        # Waypoints (suppress overlapping near-origin text labels at wide zoom)
+        painter.setFont(QFont("SansSerif", 7, QFont.Weight.Bold))
         for wp in WAYPOINTS_LOCAL:
-            dist, brg = haversine_distance_bearing_nm(self.home_lat, self.home_lon, wp.latitude, wp.longitude)
+            dist, _ = haversine_distance_bearing_nm(self.home_lat, self.home_lon, wp.latitude, wp.longitude)
             if dist <= self.max_range_nm * 1.05:
                 wx, wy = self._coords_to_screen(wp.latitude, wp.longitude, cx, cy, radius_px)
-
-                # Icon marker
+                px_from_home = math.hypot(wx - cx, wy - cy)
                 painter.setPen(Qt.PenStyle.NoPen)
                 if wp.code == "HOME":
-                    painter.setBrush(QColor("#10b981"))  # Emerald Green for Penrose Home
-                    painter.drawEllipse(QPointF(wx, wy), 5.0, 5.0)
+                    painter.setBrush(QColor("#10b981"))
+                    painter.drawEllipse(QPointF(wx, wy), 4.5, 4.5)
                     painter.setPen(QColor("#34d399"))
-                    painter.drawText(int(wx + 8), int(wy + 4), "📍 HOME (J & 13th)")
+                    painter.drawText(int(wx - 14), int(wy + 12), "HOME")
                 elif wp.code == "1V6":
                     painter.setBrush(QColor("#f59e0b"))
-                    painter.drawRect(QRectF(wx - 3.5, wy - 3.5, 7.0, 7.0))
-                    painter.setPen(QColor("#fbbf24"))
-                    painter.drawText(int(wx + 7), int(wy + 4), "✈ 1V6 CTAF 122.8")
+                    painter.drawRect(QRectF(wx - 3.0, wy - 3.0, 6.0, 6.0))
+                    if px_from_home >= 22.0:
+                        painter.setPen(QColor("#fbbf24"))
+                        painter.drawText(int(wx + 5), int(wy + 3), "1V6")
                 elif wp.waypoint_type == "TRANSMITTER":
                     painter.setBrush(QColor("#e11d48"))
-                    painter.drawEllipse(QPointF(wx, wy), 4.0, 4.0)
-                    painter.setPen(QColor("#f43f5e"))
-                    painter.drawText(int(wx + 6), int(wy + 4), wp.code)
+                    painter.drawEllipse(QPointF(wx, wy), 3.5, 3.5)
+                    if px_from_home >= 22.0:
+                        painter.setPen(QColor("#f43f5e"))
+                        painter.drawText(int(wx + 5), int(wy + 3), wp.code)
                 else:
                     painter.setBrush(QColor("#0284c7"))
-                    painter.drawRect(QRectF(wx - 3, wy - 3, 6, 6))
-                    painter.setPen(QColor("#38bdf8"))
-                    painter.drawText(int(wx + 6), int(wy + 4), wp.code)
+                    painter.drawRect(QRectF(wx - 2.5, wy - 2.5, 5.0, 5.0))
+                    if px_from_home >= 22.0:
+                        painter.setPen(QColor("#38bdf8"))
+                        painter.drawText(int(wx + 5), int(wy + 3), wp.code)
 
-        # 6. Draw Plotted Aircraft Targets
-        plane_font = QFont("Monospace", 8, QFont.Weight.Bold)
-        painter.setFont(plane_font)
-
-        for target in self.targets.values():
+        # Plotted Aircraft
+        painter.setFont(QFont("Monospace", 7, QFont.Weight.Bold))
+        pos_targets = [t for t in self.targets.values() if t.has_position]
+        for target in pos_targets:
             if target.distance_nm <= self.max_range_nm * 1.1:
                 tx, ty = self._coords_to_screen(target.latitude, target.longitude, cx, cy, radius_px)
-
-                # Breadcrumb trail
                 if len(target.history) >= 2:
-                    trail_pen = QPen(QColor(34, 211, 238, 90), 1.0, Qt.PenStyle.DotLine)
-                    painter.setPen(trail_pen)
+                    painter.setPen(QPen(QColor(34, 211, 238, 90), 1.0, Qt.PenStyle.DotLine))
                     prev_pt: Optional[QPointF] = None
                     for h_lat, h_lon in target.history:
                         hx, hy = self._coords_to_screen(h_lat, h_lon, cx, cy, radius_px)
@@ -400,131 +443,186 @@ class ADSBRadarMapCanvas(QWidget):
                             painter.drawLine(prev_pt, cur_pt)
                         prev_pt = cur_pt
 
-                # Aircraft symbol (Arrow / Delta oriented along heading)
                 is_sel = self.selected_target and self.selected_target.icao == target.icao
-                color = QColor("#00ffff") if is_sel else (QColor("#f59e0b") if target.callsign.startswith("FFL") else QColor("#38bdf8"))
-
+                color = QColor("#00ffff") if is_sel else (
+                    QColor("#10b981") if self.mode_badge == "LIVE 1090 RF" else QColor("#f59e0b")
+                )
                 painter.save()
                 painter.translate(tx, ty)
                 painter.rotate(target.heading_deg)
-
-                poly = QPolygonF([
-                    QPointF(0, -9),
-                    QPointF(6, 6),
-                    QPointF(0, 3),
-                    QPointF(-6, 6),
-                ])
+                poly = QPolygonF([QPointF(0, -8), QPointF(5, 5), QPointF(0, 2.5), QPointF(-5, 5)])
                 painter.setBrush(QBrush(color))
                 painter.setPen(QPen(QColor("#ffffff") if is_sel else QColor("#000000"), 1.0))
                 painter.drawPolygon(poly)
                 painter.restore()
 
-                # Callout Label: Callsign, Altitude, Speed, Distance
-                vr_sym = "▲" if target.vertical_rate_fpm > 200 else ("▼" if target.vertical_rate_fpm < -200 else "―")
                 alt_str = f"FL{target.altitude_ft // 100}" if target.altitude_ft >= 18000 else f"{target.altitude_ft}ft"
-
                 painter.setPen(QColor("#ffffff" if is_sel else "#e2e8f0"))
-                painter.drawText(int(tx + 9), int(ty - 4), f"{target.callsign} ({target.aircraft_type})")
+                painter.drawText(int(tx + 8), int(ty - 2), f"{target.callsign}")
                 painter.setPen(QColor("#38bdf8" if is_sel else "#94a3b8"))
-                painter.drawText(int(tx + 9), int(ty + 7), f"{alt_str} {vr_sym} {target.ground_speed_kt}kt")
-                painter.setPen(QColor("#a855f7" if is_sel else "#64748b"))
-                painter.drawText(int(tx + 9), int(ty + 18), f"{target.distance_nm}NM @ {target.bearing_deg:.0f}°")
+                painter.drawText(int(tx + 8), int(ty + 8), f"{alt_str} {target.ground_speed_kt}kt")
 
-        # 7. Header Overlay info
-        painter.setPen(QColor("#22d3ee"))
-        painter.setFont(QFont("SansSerif", 9, QFont.Weight.Bold))
-        painter.drawText(10, 18, f"RADAR RANGE: {self.max_range_nm:.0f} NM • TARGETS: {len(self.targets)} ACTIVE")
-        painter.setPen(QColor("#94a3b8"))
-        painter.setFont(QFont("SansSerif", 8))
-        painter.drawText(10, 32, f"CENTER: Penrose, CO (J & 13th • {PENROSE_GRID}) • ADS-B 1090 MHz")
+        # Top-left concise status overlay
+        badge_col = "#10b981" if self.mode_badge == "LIVE 1090 RF" else (
+            "#f59e0b" if self.mode_badge == "SIM DEMO" else "#94a3b8"
+        )
+        painter.setPen(QColor(badge_col))
+        painter.setFont(QFont("SansSerif", 8, QFont.Weight.Bold))
+        extra = f" • {self.mode_s_msgs} DF17" if self.mode_badge == "LIVE 1090 RF" else ""
+        painter.drawText(
+            6, 14,
+            f"[{self.mode_badge}] {self.max_range_nm:.0f}NM • {len(self.targets)} ACFT{extra}",
+        )
+        painter.setPen(QColor("#64748b"))
+        painter.setFont(QFont("SansSerif", 7))
+        painter.drawText(6, 26, f"Penrose CO ({PENROSE_GRID})")
+        painter.end()
 
 
 class TacticalRadarTelemetryWidget(QWidget):
     """
-    Complete Tactical Radar, ADS-B Airspace Map, and Live Decoded Telemetry Panel.
+    Complete Tactical Radar, Live 1090 MHz ADS-B Map, Broadcast TV Launcher,
+    and Thread-Safe Decoded Telemetry Panel.
     """
     tune_requested = pyqtSignal(str, float, str)  # (name, freq_hz, demod_mode)
+    tv_demod_requested = pyqtSignal(float)        # center_freq_hz -> opens BroadcastTVReceiverDialog
+    _bg_msg_sig = pyqtSignal(str, str, float, str, str, str)
+    _bg_done_sig = pyqtSignal(str)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setObjectName("tacticalTelemetryPanel")
 
         self.messages: List[DecodedMessageRecord] = []
+        self._adsb_rx = get_adsb_receiver()
+        self._seen_live_icaos: set[str] = set()
+        self._sim_mode = False
+
+        self._bg_msg_sig.connect(self.add_message)
+        self._bg_done_sig.connect(self._on_bg_worker_done)
+
         self._build_ui()
 
-        # Radar sweep animation timer (25 FPS)
+        # Radar sweep animation timer (20 FPS)
         self._sweep_timer = QTimer(self)
         self._sweep_timer.timeout.connect(self._on_sweep_tick)
-        self._sweep_timer.start(40)
+        self._sweep_timer.start(50)
 
-        # Message stream ticker (adds simulated local dispatch / APRS / IoT events)
-        self._msg_timer = QTimer(self)
-        self._msg_timer.timeout.connect(self._on_msg_tick)
-        self._msg_timer.start(3500)
+        # Live ADS-B readsb JSON poller (1 Hz on Qt main thread)
+        self._adsb_poll_timer = QTimer(self)
+        self._adsb_poll_timer.timeout.connect(self._poll_live_adsb)
+        self._adsb_poll_timer.start(1000)
 
-        self._seed_initial_messages()
+        # Optional Simulation Demo message ticker (only runs when SIM DEMO is explicitly enabled!)
+        self._sim_msg_timer = QTimer(self)
+        self._sim_msg_timer.timeout.connect(self._on_sim_msg_tick)
+
+        self._seed_initial_status()
 
     def _build_ui(self) -> None:
         root_vbox = QVBoxLayout(self)
-        root_vbox.setContentsMargins(6, 4, 6, 4)
-        root_vbox.setSpacing(5)
+        root_vbox.setContentsMargins(4, 3, 4, 3)
+        root_vbox.setSpacing(4)
 
-        # 1. TOP QUICK DEMOD ACTION BAR
+        # 1. COMPACT ZERO-OVERFLOW QUICK TUNE & VIEW SWITCHER BAR (< 780px total!)
         action_strip = QFrame(self)
         action_strip.setObjectName("cardPanel")
         act_hbox = QHBoxLayout(action_strip)
-        act_hbox.setContentsMargins(6, 4, 6, 4)
-        act_hbox.setSpacing(5)
+        act_hbox.setContentsMargins(4, 3, 4, 3)
+        act_hbox.setSpacing(3)
 
-        lbl_quick = QLabel("⚡ QUICK TUNE:", action_strip)
-        lbl_quick.setStyleSheet("color: #38bdf8; font-weight: bold; font-size: 10px;")
-        act_hbox.addWidget(lbl_quick)
+        compact_btn_qss = (
+            "QPushButton { background-color: #162235; color: #e2e8f0; border: 1px solid #2b4263; "
+            "border-radius: 4px; padding: 2px 5px; font-size: 10px; font-weight: bold; min-height: 22px; }"
+            "QPushButton:hover { background-color: #0284c7; color: #ffffff; }"
+        )
 
         quick_buttons = [
-            ("🚛 CB 19 Trucker (27.185 AM)", "CB Ch 19 Trucker Highway Calling", 27_185_000.0, "AM"),
-            ("🚒 Penrose Fire (155.880 NFM)", "Penrose Fire Dept Pagers / Ops", 155_880_000.0, "Narrow FM"),
-            ("🚒 Florence/Penrose (154.400 NFM)", "Florence / Penrose Fire Dispatch", 154_400_000.0, "Narrow FM"),
-            ("🚓 Fremont Sheriff (154.845 NFM)", "Fremont County Sheriff VHF Backup", 154_845_000.0, "Narrow FM"),
-            ("🏔️ CO SAR MRA-1 (155.160 NFM)", "Colorado Search & Rescue MRA-1", 155_160_000.0, "Narrow FM"),
-            ("🚆 UP Rail AAR 92 (161.490 NFM)", "Union Pacific Tennessee Pass AAR 92", 161_490_000.0, "Narrow FM"),
-            ("✈️ 1V6 Penrose CTAF (122.800 AM)", "Fremont County Airport 1V6 CTAF", 122_800_000.0, "AM"),
-            ("📺 KOAA NBC TV (Ch 25)", "KOAA NBC TV Ch 25 (539.0 MHz)", 539_000_000.0, "Raw I/Q"),
+            ("🚛 CB19", "CB Ch 19 Trucker (27.185 MHz)", 27_185_000.0, "AM"),
+            ("🚒 Fire", "Penrose Fire Ops (155.880 MHz)", 155_880_000.0, "Narrow FM"),
+            ("🚓 Sheriff", "Fremont Sheriff (154.845 MHz)", 154_845_000.0, "Narrow FM"),
+            ("🏔️ SAR", "CO Search & Rescue MRA-1 (155.160 MHz)", 155_160_000.0, "Narrow FM"),
+            ("🚆 Rail", "Union Pacific AAR 92 (161.490 MHz)", 161_490_000.0, "Narrow FM"),
+            ("✈️ 1V6", "Penrose 1V6 Airport CTAF (122.800 MHz)", 122_800_000.0, "AM"),
         ]
 
         for title, name, freq_hz, demod in quick_buttons:
             btn = QPushButton(title, action_strip)
-            btn.setObjectName("btnTuneRow")
-            btn.clicked.connect(lambda _, n=name, f=freq_hz, d=demod: self.tune_requested.emit(n, f, d))
+            btn.setToolTip(f"Instant Tune in Gqrx: {name}")
+            btn.setStyleSheet(compact_btn_qss)
+            btn.clicked.connect(lambda _c=False, n=name, f=freq_hz, d=demod: self.tune_requested.emit(n, f, d))
             act_hbox.addWidget(btn)
 
-        act_hbox.addStretch()
+        self.btn_quick_tv = QPushButton("📺 Ch25 TV", action_strip)
+        self.btn_quick_tv.setToolTip("Open Live Broadcast TV Demodulator on KOAA NBC Ch 25 (539.0 MHz)")
+        self.btn_quick_tv.setStyleSheet(
+            "QPushButton { background-color: #4c0519; color: #fecdd3; border: 1px solid #e11d48; "
+            "border-radius: 4px; padding: 2px 6px; font-size: 10px; font-weight: bold; min-height: 22px; }"
+            "QPushButton:hover { background-color: #be123c; color: #ffffff; }"
+        )
+        self.btn_quick_tv.clicked.connect(lambda: self.tv_demod_requested.emit(539_000_000.0))
+        act_hbox.addWidget(self.btn_quick_tv)
+
+        act_hbox.addStretch(1)
+
+        # 5" DSI View Mode Switcher: [Split] [Radar] [Feed]
+        for label, mode_idx in (("Split", 0), ("Radar", 1), ("Feed", 2)):
+            vb = QPushButton(label, action_strip)
+            vb.setStyleSheet(
+                "QPushButton { background-color: #0f172a; color: #38bdf8; border: 1px solid #1e3a5f; "
+                "border-radius: 3px; padding: 2px 5px; font-size: 9px; font-weight: bold; min-height: 20px; }"
+                "QPushButton:hover { background-color: #1e293b; }"
+            )
+            vb.clicked.connect(lambda _c=False, m=mode_idx: self.set_panel_view_mode(m))
+            act_hbox.addWidget(vb)
+
         root_vbox.addWidget(action_strip)
 
         # 2. MAIN SPLITTER: Left = Tactical Radar Canvas, Right = Live Telemetry & Pager Feed
-        splitter = QSplitter(Qt.Orientation.Horizontal, self)
-        splitter.setHandleWidth(4)
+        self.splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        self.splitter.setHandleWidth(4)
+        self.splitter.setChildrenCollapsible(True)
 
         # Left: Radar & Airspace Map Box
-        radar_box = QFrame(splitter)
-        radar_box.setObjectName("cardPanel")
-        radar_vbox = QVBoxLayout(radar_box)
-        radar_vbox.setContentsMargins(6, 4, 6, 4)
-        radar_vbox.setSpacing(4)
+        self.radar_box = QFrame(self.splitter)
+        self.radar_box.setObjectName("cardPanel")
+        radar_vbox = QVBoxLayout(self.radar_box)
+        radar_vbox.setContentsMargins(4, 3, 4, 3)
+        radar_vbox.setSpacing(3)
 
-        # Radar Toolbar
         radar_ctrl_bar = QHBoxLayout()
-        radar_ctrl_bar.setSpacing(4)
-        lbl_radar_title = QLabel("📡 ADS-B TACTICAL AIRSPACE RADAR (1090 MHz)", radar_box)
-        lbl_radar_title.setStyleSheet("color: #00f0ff; font-weight: bold; font-size: 11px;")
-        radar_ctrl_bar.addWidget(lbl_radar_title)
-        radar_ctrl_bar.addStretch()
+        radar_ctrl_bar.setSpacing(3)
 
-        self.btn_zoom_in = QPushButton("🔍+ Zoom In", radar_box)
-        self.btn_zoom_out = QPushButton("🔍- Zoom Out", radar_box)
-        self.btn_radar_reset = QPushButton("⟲ Reset Penrose", radar_box)
+        self.btn_live_adsb = QPushButton("📡 LIVE ADS-B", self.radar_box)
+        self.btn_live_adsb.setCheckable(True)
+        self.btn_live_adsb.setToolTip("Stream real 1090 MHz Mode-S / ADS-B aircraft from HackRF One via readsb")
+        self.btn_live_adsb.setStyleSheet(
+            "QPushButton { background-color: #082f49; color: #38bdf8; border: 1px solid #0284c7; "
+            "border-radius: 4px; padding: 2px 6px; font-size: 10px; font-weight: bold; min-height: 22px; }"
+            "QPushButton:checked { background-color: #059669; color: #ffffff; border-color: #34d399; }"
+        )
+        self.btn_live_adsb.clicked.connect(self._on_toggle_live_adsb)
+        radar_ctrl_bar.addWidget(self.btn_live_adsb)
+
+        self.btn_sim_demo = QPushButton("SIM", self.radar_box)
+        self.btn_sim_demo.setCheckable(True)
+        self.btn_sim_demo.setToolTip("Toggle synthetic demo aircraft & telemetry packets for offline UI preview")
+        self.btn_sim_demo.setStyleSheet(
+            "QPushButton { background-color: #1e293b; color: #94a3b8; border: 1px solid #334155; "
+            "border-radius: 4px; padding: 2px 5px; font-size: 10px; font-weight: bold; min-height: 22px; }"
+            "QPushButton:checked { background-color: #78350f; color: #fde68a; border-color: #f59e0b; }"
+        )
+        self.btn_sim_demo.clicked.connect(self._on_toggle_sim_demo)
+        radar_ctrl_bar.addWidget(self.btn_sim_demo)
+
+        radar_ctrl_bar.addStretch(1)
+
+        self.btn_zoom_in = QPushButton("🔍+", self.radar_box)
+        self.btn_zoom_out = QPushButton("🔍-", self.radar_box)
+        self.btn_radar_reset = QPushButton("⟲", self.radar_box)
 
         for b in (self.btn_zoom_in, self.btn_zoom_out, self.btn_radar_reset):
-            b.setMinimumHeight(22)
+            b.setStyleSheet(compact_btn_qss)
             radar_ctrl_bar.addWidget(b)
 
         self.btn_zoom_in.clicked.connect(self._on_zoom_in)
@@ -532,66 +630,78 @@ class TacticalRadarTelemetryWidget(QWidget):
         self.btn_radar_reset.clicked.connect(self._on_reset_view)
         radar_vbox.addLayout(radar_ctrl_bar)
 
-        self.radar_canvas = ADSBRadarMapCanvas(radar_box)
+        self.radar_canvas = ADSBRadarMapCanvas(self.radar_box)
         self.radar_canvas.aircraft_selected.connect(self._on_aircraft_selected)
         radar_vbox.addWidget(self.radar_canvas, 1)
 
-        # Target Telemetry Status Callout Bar
         self.lbl_target_detail = QLabel(
-            "Selected Target: Click any aircraft symbol to view real-time vector, squawk & route telemetry.",
-            radar_box,
+            "Tap [📡 LIVE ADS-B] for real 1090 MHz aircraft tracking, or tap an aircraft icon for vector details.",
+            self.radar_box,
         )
+        self.lbl_target_detail.setWordWrap(True)
         self.lbl_target_detail.setStyleSheet(
             "background-color: #04101e; border: 1px solid #0284c7; border-radius: 4px; "
-            "color: #bae6fd; padding: 4px 8px; font-family: monospace; font-size: 10px;"
+            "color: #bae6fd; padding: 2px 5px; font-family: monospace; font-size: 9px;"
         )
         radar_vbox.addWidget(self.lbl_target_detail)
-        splitter.addWidget(radar_box)
+        self.splitter.addWidget(self.radar_box)
 
-        # Right: Live POCSAG Pager, APRS & IoT Telemetry Feed Box
-        telem_box = QFrame(splitter)
-        telem_box.setObjectName("cardPanel")
-        telem_vbox = QVBoxLayout(telem_box)
-        telem_vbox.setContentsMargins(6, 4, 6, 4)
-        telem_vbox.setSpacing(4)
+        # Right: Live POCSAG Pager, APRS, ISM & Broadcast TV Telemetry Feed Box
+        self.telem_box = QFrame(self.splitter)
+        self.telem_box.setObjectName("cardPanel")
+        telem_vbox = QVBoxLayout(self.telem_box)
+        telem_vbox.setContentsMargins(4, 3, 4, 3)
+        telem_vbox.setSpacing(3)
 
         telem_hdr = QHBoxLayout()
-        lbl_telem_title = QLabel("📟 LIVE DECODED TELEMETRY & DISPATCH FEED", telem_box)
-        lbl_telem_title.setStyleSheet("color: #10b981; font-weight: bold; font-size: 11px;")
-        telem_hdr.addWidget(lbl_telem_title)
-        telem_hdr.addStretch()
+        telem_hdr.setSpacing(3)
 
-        self.btn_live_pager = QPushButton("▶ Live Pagers", telem_box)
-        self.btn_live_pager.setToolTip("Capture live RF & decode POCSAG/FLEX fire/EMS pagers using multimon-ng")
-        self.btn_live_pager.setMinimumHeight(22)
+        self.btn_live_pager = QPushButton("📟 Pager", self.telem_box)
+        self.btn_live_pager.setToolTip("Capture 3s on 155.880 MHz & decode POCSAG/FLEX via multimon-ng")
+        self.btn_live_pager.setStyleSheet(compact_btn_qss)
         self.btn_live_pager.clicked.connect(self._on_live_pager_clicked)
         telem_hdr.addWidget(self.btn_live_pager)
 
-        self.btn_live_sensors = QPushButton("▶ Live Sensors", telem_box)
-        self.btn_live_sensors.setToolTip("Capture live RF & decode ISM sensors using rtl_433")
-        self.btn_live_sensors.setMinimumHeight(22)
+        self.btn_live_aprs = QPushButton("📍 APRS", self.telem_box)
+        self.btn_live_aprs.setToolTip("Capture 4s on 144.390 MHz & decode AX.25 APRS packets via multimon-ng")
+        self.btn_live_aprs.setStyleSheet(compact_btn_qss)
+        self.btn_live_aprs.clicked.connect(self._on_live_aprs_clicked)
+        telem_hdr.addWidget(self.btn_live_aprs)
+
+        self.btn_live_sensors = QPushButton("📊 433M", self.telem_box)
+        self.btn_live_sensors.setToolTip("Capture 3s on 433.920 MHz & decode IoT/weather sensors via rtl_433")
+        self.btn_live_sensors.setStyleSheet(compact_btn_qss)
         self.btn_live_sensors.clicked.connect(self._on_live_sensors_clicked)
         telem_hdr.addWidget(self.btn_live_sensors)
 
-        self.btn_live_tv = QPushButton("📺 TV Scan", telem_box)
-        self.btn_live_tv.setToolTip("Analyze physical ATSC digital TV channel carrier & SNR")
-        self.btn_live_tv.setMinimumHeight(22)
-        self.btn_live_tv.clicked.connect(self._on_live_tv_clicked)
+        self.btn_live_tv = QPushButton("📺 TV RX", self.telem_box)
+        self.btn_live_tv.setToolTip("Open Live ATSC 8VSB + Analog NTSC Television Receiver Dialog")
+        self.btn_live_tv.setStyleSheet(
+            "QPushButton { background-color: #4c0519; color: #fecdd3; border: 1px solid #e11d48; "
+            "border-radius: 4px; padding: 2px 5px; font-size: 10px; font-weight: bold; min-height: 22px; }"
+            "QPushButton:hover { background-color: #be123c; color: #ffffff; }"
+        )
+        self.btn_live_tv.clicked.connect(lambda: self.tv_demod_requested.emit(539_000_000.0))
         telem_hdr.addWidget(self.btn_live_tv)
 
-        self.btn_clear_telem = QPushButton("✖ Clear", telem_box)
-        self.btn_clear_telem.setMinimumHeight(22)
+        telem_hdr.addStretch(1)
+
+        self.btn_clear_telem = QPushButton("✖", self.telem_box)
+        self.btn_clear_telem.setToolTip("Clear telemetry log")
+        self.btn_clear_telem.setStyleSheet(compact_btn_qss)
         self.btn_clear_telem.clicked.connect(self._clear_messages)
         telem_hdr.addWidget(self.btn_clear_telem)
         telem_vbox.addLayout(telem_hdr)
 
-        self.table_telem = QTableWidget(telem_box)
+        self.table_telem = QTableWidget(self.telem_box)
         self.table_telem.setColumnCount(4)
-        self.table_telem.setHorizontalHeaderLabels(["Time", "Service / Protocol", "Freq (MHz)", "Decoded Message Payload / Telemetry"])
+        self.table_telem.setHorizontalHeaderLabels(["Time", "Proto", "MHz", "Decoded Payload"])
         self.table_telem.setAlternatingRowColors(True)
         self.table_telem.verticalHeader().setVisible(False)
+        self.table_telem.verticalHeader().setDefaultSectionSize(22)
         self.table_telem.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table_telem.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table_telem.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         th = self.table_telem.horizontalHeader()
         th.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -600,11 +710,132 @@ class TacticalRadarTelemetryWidget(QWidget):
         th.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
 
         telem_vbox.addWidget(self.table_telem, 1)
-        splitter.addWidget(telem_box)
+        self.splitter.addWidget(self.telem_box)
 
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
-        root_vbox.addWidget(splitter, 1)
+        self.splitter.setStretchFactor(0, 5)
+        self.splitter.setStretchFactor(1, 4)
+        root_vbox.addWidget(self.splitter, 1)
+
+    def set_panel_view_mode(self, mode: int) -> None:
+        """0 = Split, 1 = Full Radar, 2 = Full Feed."""
+        if mode == 1:
+            self.radar_box.setVisible(True)
+            self.telem_box.setVisible(False)
+        elif mode == 2:
+            self.radar_box.setVisible(False)
+            self.telem_box.setVisible(True)
+        else:
+            self.radar_box.setVisible(True)
+            self.telem_box.setVisible(True)
+            total = max(400, self.width())
+            self.splitter.setSizes([int(total * 0.54), int(total * 0.46)])
+
+    # ------------------------------------------------------------------
+    # Live 1090 MHz ADS-B & Optional Simulation Control
+    # ------------------------------------------------------------------
+    def start_live_adsb(self) -> Tuple[bool, str]:
+        """Public helper allowing main_window to activate Live 1090 MHz ADS-B directly."""
+        if self._sim_mode:
+            self.btn_sim_demo.setChecked(False)
+            self._on_toggle_sim_demo(False)
+        if not self._adsb_rx.is_running():
+            ok, msg = self._adsb_rx.start(
+                home_lat=self.radar_canvas.home_lat,
+                home_lon=self.radar_canvas.home_lon,
+            )
+            self.btn_live_adsb.setChecked(ok)
+            self.add_message(
+                time.strftime("%H:%M:%S"),
+                "ADSB",
+                1090.000,
+                "READSB" if ok else "BUSY",
+                msg,
+                "#10b981" if ok else "#ef4444",
+            )
+            if ok:
+                self.radar_canvas.update_live_targets([], 0)
+                self.lbl_target_detail.setText(
+                    "LIVE 1090.0 MHz ADS-B ACTIVE: HackRF One (2.4 MSPS) -> readsb DF17 Mode-S decoder."
+                )
+            else:
+                self.lbl_target_detail.setText(f"1090 MHz ADS-B unavailable: {msg}")
+            return ok, msg
+        self.btn_live_adsb.setChecked(True)
+        return True, "Live 1090 MHz ADS-B already streaming."
+
+    def stop_live_adsb(self) -> None:
+        if self._adsb_rx.is_running():
+            self._adsb_rx.stop()
+        self.btn_live_adsb.setChecked(False)
+        if not self._sim_mode:
+            self.radar_canvas.mode_badge = "STANDBY"
+            self.radar_canvas.update()
+            self.lbl_target_detail.setText(
+                "STANDBY: Tap [📡 LIVE ADS-B] for real 1090 MHz aircraft tracking, or [SIM] for demo vectors."
+            )
+
+    def _on_toggle_live_adsb(self, checked: bool) -> None:
+        if checked:
+            self.start_live_adsb()
+        else:
+            self.stop_live_adsb()
+            self.add_message(
+                time.strftime("%H:%M:%S"),
+                "ADSB",
+                1090.000,
+                "STOPPED",
+                "Released HackRF One from 1090 MHz ADS-B mode.",
+                "#94a3b8",
+            )
+
+    def _on_toggle_sim_demo(self, checked: bool) -> None:
+        self._sim_mode = checked
+        if checked:
+            self.stop_live_adsb()
+            self.radar_canvas.set_simulation_mode(True)
+            self._sim_msg_timer.start(4500)
+            self.add_message(
+                time.strftime("%H:%M:%S"),
+                "SIM",
+                1090.000,
+                "DEMO_ON",
+                "[SIMULATION] Enabled synthetic Front Range aircraft & demo telemetry.",
+                "#f59e0b",
+            )
+        else:
+            self._sim_msg_timer.stop()
+            self.radar_canvas.set_simulation_mode(False)
+
+    def _poll_live_adsb(self) -> None:
+        if not self.btn_live_adsb.isChecked():
+            return
+        targets, total_msgs, running = self._adsb_rx.poll_targets()
+        if not running:
+            # Stopped externally by SDRResourceArbiter (e.g. Scanner or Gqrx claimed HackRF)
+            self.btn_live_adsb.setChecked(False)
+            self.radar_canvas.mode_badge = "STANDBY"
+            self.radar_canvas.update()
+            return
+
+        self.radar_canvas.update_live_targets(targets, total_msgs)
+        now_s = time.strftime("%H:%M:%S")
+        for t in targets:
+            icao = t["icao"]
+            if icao not in self._seen_live_icaos:
+                self._seen_live_icaos.add(icao)
+                pos_txt = (
+                    f"{t['distance_nm']}NM @ {t['bearing_deg']:.0f}°"
+                    if t.get("has_position")
+                    else "Mode-S Altitude Squitter"
+                )
+                self.add_message(
+                    now_s,
+                    "ADSB",
+                    1090.000,
+                    t["callsign"],
+                    f"ICAO {icao} • {t['altitude_ft']}ft • {t['ground_speed_kt']}kt • {pos_txt}",
+                    "#10b981",
+                )
 
     def _on_zoom_in(self) -> None:
         self.radar_canvas.zoom_in()
@@ -620,29 +851,30 @@ class TacticalRadarTelemetryWidget(QWidget):
 
     def _on_aircraft_selected(self, target: AircraftTarget) -> None:
         self.lbl_target_detail.setText(
-            f"TARGET {target.callsign} ({target.icao}) • TYPE: {target.aircraft_type} • "
-            f"ALT: {target.altitude_ft:,} ft • SPEED: {target.ground_speed_kt} kt • "
-            f"HDG: {target.heading_deg:.0f}° • SQUAWK: {target.squawk} • "
-            f"RANGE: {target.distance_nm} NM @ {target.bearing_deg:.0f}° FROM PENROSE BASE"
+            f"{target.callsign} ({target.icao}) • {target.altitude_ft:,}ft • "
+            f"{target.ground_speed_kt}kt • HDG {target.heading_deg:.0f}° • SQK {target.squawk} • "
+            f"{target.distance_nm}NM @ {target.bearing_deg:.0f}°"
         )
 
-    def _seed_initial_messages(self) -> None:
+    def _seed_initial_status(self) -> None:
         now_str = time.strftime("%H:%M:%S")
-        self.add_message(now_str, "POCSAG", 155.880, "PENROSE_FIRE", "[DISPATCH] PENROSE FIRE / FLORENCE FIRE: STANDBY REPORT AT CORNER OF J ST & 13TH", "#ef4444")
-        self.add_message(now_str, "APRS", 144.390, "W0PEN-1", "WX STATION: PENROSE ELEV 5300FT • 62.4°F • BARO 30.12in • WIND SW 6MPH", "#38bdf8")
-        self.add_message(now_str, "POCSAG", 155.340, "CHERN_MED9", "ST. THOMAS MORE CAÑON CITY: HOSPITAL STATUS NORMAL • MEDEVAC HELIPAD OPEN", "#ec4899")
-        self.add_message(now_str, "ISM_433", 433.920, "AURIOL-TH", "LOCAL WEATHER SENSOR: CH1 TEMP 18.2C HUMIDITY 38% BATT OK", "#eab308")
-        self.add_message(now_str, "ATSC_TV", 539.000, "KOAA_NBC", "ATSC 1.0 PILOT CARRIER ACQUIRED: RF CH 25 (VIRTUAL 5.1 KOAA-HD PUEBLO/SPRINGS)", "#e11d48")
+        self.add_message(
+            now_str,
+            "SYSTEM",
+            0.000,
+            "READY",
+            "Penrose Base (DM78vj) ready — tap [📡 LIVE ADS-B], [📺 TV RX], [📟 Pager], [📍 APRS], or [📊 433M].",
+            "#38bdf8",
+        )
 
-    def _on_msg_tick(self) -> None:
+    def _on_sim_msg_tick(self) -> None:
+        if not self._sim_mode:
+            return
         now_str = time.strftime("%H:%M:%S")
         pool = [
-            ("POCSAG", 155.880, "PENROSE_FIRE", "PAGE: PENROSE FIRE DISTRICT DISPATCH - MEDICAL AID RUN ON HIGHWAY 50 MP 285", "#ef4444"),
-            ("APRS", 144.390, "K0FRE-9", "FREMONT CO ARES MOBILE DIGIPEATER ACTIVE (DM78vj)", "#38bdf8"),
-            ("ISM_433", 433.920, "ACURITE-6045", "SOIL MOISTURE / RAIN SENSOR 0.00 IN / HR", "#eab308"),
-            ("POCSAG", 154.400, "FLORENCE_FIRE", "PAGING: ENGINE 1 & MED-4 EN ROUTE TO COUNTY ROAD 123", "#ef4444"),
-            ("APRS", 144.390, "N0PUB-3", "PUEBLO EMERGENCY COMMUNICATIONS NET: STATUS ALL-CLEAR", "#38bdf8"),
-            ("ISM_915", 915.000, "LORA_MESH", "MESHTASTIC NODE [Penrose-Deck]: 18 PEERS DISCOVERED ON CANAL 0", "#a855f7"),
+            ("SIM_APRS", 144.390, "W0PEN-1", "[SIM] WX PENROSE 5300FT • 62.4F • WIND SW 6MPH", "#f59e0b"),
+            ("SIM_433", 433.920, "ACURITE", "[SIM] SENSOR CH1 TEMP 18.2C HUMIDITY 38% BATT OK", "#f59e0b"),
+            ("SIM_TV", 539.000, "KOAA_25", "[SIM] ATSC CH 25 8VSB PILOT 536.309 MHz DEMO", "#f59e0b"),
         ]
         chosen = random.choice(pool)
         self.add_message(now_str, chosen[0], chosen[1], chosen[2], chosen[3], chosen[4])
@@ -653,18 +885,22 @@ class TacticalRadarTelemetryWidget(QWidget):
         if len(self.messages) > 100:
             self.messages.pop()
 
+        if self.table_telem.rowCount() >= 100:
+            self.table_telem.removeRow(self.table_telem.rowCount() - 1)
+
         self.table_telem.insertRow(0)
 
         t_item = QTableWidgetItem(ts)
         t_item.setFont(QFont("Monospace", 8))
         self.table_telem.setItem(0, 0, t_item)
 
-        srv_item = QTableWidgetItem(f"[{ch_type}] {source}")
+        srv_item = QTableWidgetItem(f"{ch_type}:{source}")
         srv_item.setFont(QFont("SansSerif", 8, QFont.Weight.Bold))
         srv_item.setForeground(QColor(color_hex))
         self.table_telem.setItem(0, 1, srv_item)
 
-        f_item = QTableWidgetItem(f"{freq_mhz:.3f}")
+        f_txt = f"{freq_mhz:.3f}" if freq_mhz > 0 else "---"
+        f_item = QTableWidgetItem(f_txt)
         f_item.setFont(QFont("Monospace", 8, QFont.Weight.Bold))
         f_item.setForeground(QColor("#fbbf24"))
         self.table_telem.setItem(0, 2, f_item)
@@ -674,70 +910,121 @@ class TacticalRadarTelemetryWidget(QWidget):
         c_item.setForeground(QColor("#e2e8f0"))
         self.table_telem.setItem(0, 3, c_item)
 
+    # ------------------------------------------------------------------
+    # Thread-Safe Background Telemetry Captures (Qt Signal Marshaled!)
+    # ------------------------------------------------------------------
+    def _on_bg_worker_done(self, btn_key: str) -> None:
+        if btn_key == "pager":
+            self.btn_live_pager.setEnabled(True)
+        elif btn_key == "aprs":
+            self.btn_live_aprs.setEnabled(True)
+        elif btn_key == "sensors":
+            self.btn_live_sensors.setEnabled(True)
+
     def _on_live_pager_clicked(self) -> None:
+        self.stop_live_adsb()
         self.btn_live_pager.setEnabled(False)
-        self.add_message(time.strftime("%H:%M:%S"), "POCSAG", 155.880, "MULTIMON", "Initiating live HackRF capture & multimon-ng POCSAG/FLEX decode (3s)...", "#38bdf8")
+        self.add_message(
+            time.strftime("%H:%M:%S"), "POCSAG", 155.880, "CAPTURE",
+            "Capturing 3s live HackRF IQ @ 155.880 MHz -> multimon-ng POCSAG/FLEX...", "#38bdf8",
+        )
 
         def _worker() -> None:
             try:
                 from core.demod_engine import run_pager_data_decode
                 res = run_pager_data_decode(155_880_000, duration_sec=3.0)
-                msgs = res.get("messages", [])
                 now_str = time.strftime("%H:%M:%S")
-                if msgs:
-                    for m in msgs:
-                        self.add_message(now_str, "POCSAG", 155.880, "DISPATCH", str(m), "#ef4444")
+                if not res.get("success"):
+                    self._bg_msg_sig.emit(
+                        now_str, "POCSAG", 155.880, "NOTE", str(res.get("error") or "Busy"), "#f59e0b"
+                    )
+                elif res.get("messages"):
+                    for m in res["messages"]:
+                        self._bg_msg_sig.emit(now_str, "POCSAG", 155.880, "DECODED", str(m), "#ef4444")
                 else:
-                    self.add_message(now_str, "POCSAG", 155.880, "MONITOR", "POCSAG detector active • Channel 155.880 MHz monitored (waiting for dispatch burst)", "#10b981")
+                    self._bg_msg_sig.emit(
+                        now_str, "POCSAG", 155.880, "CLEAR",
+                        "3.0s RF capture clean — no POCSAG/FLEX burst during window.", "#10b981",
+                    )
             except Exception as exc:
-                self.add_message(time.strftime("%H:%M:%S"), "POCSAG", 155.880, "ERROR", f"Pager decode note: {exc}", "#f59e0b")
+                self._bg_msg_sig.emit(
+                    time.strftime("%H:%M:%S"), "POCSAG", 155.880, "ERR", str(exc), "#ef4444"
+                )
             finally:
-                self.btn_live_pager.setEnabled(True)
+                self._bg_done_sig.emit("pager")
 
         threading.Thread(target=_worker, daemon=True, name="LivePagerWorker").start()
 
+    def _on_live_aprs_clicked(self) -> None:
+        self.stop_live_adsb()
+        self.btn_live_aprs.setEnabled(False)
+        self.add_message(
+            time.strftime("%H:%M:%S"), "APRS", 144.390, "CAPTURE",
+            "Capturing 4s live HackRF IQ @ 144.390 MHz -> AFSK1200 AX.25 decoder...", "#38bdf8",
+        )
+
+        def _worker() -> None:
+            try:
+                from core.demod_engine import run_aprs_data_decode
+                res = run_aprs_data_decode(144_390_000, duration_sec=4.0)
+                now_str = time.strftime("%H:%M:%S")
+                if not res.get("success"):
+                    self._bg_msg_sig.emit(
+                        now_str, "APRS", 144.390, "NOTE", str(res.get("error") or "Busy"), "#f59e0b"
+                    )
+                elif res.get("packets"):
+                    for pkt in res["packets"]:
+                        self._bg_msg_sig.emit(now_str, "APRS", 144.390, "AX25", str(pkt), "#38bdf8")
+                else:
+                    self._bg_msg_sig.emit(
+                        now_str, "APRS", 144.390, "CLEAR",
+                        "4.0s RF capture clean — no AX.25 packet burst during window.", "#10b981",
+                    )
+            except Exception as exc:
+                self._bg_msg_sig.emit(
+                    time.strftime("%H:%M:%S"), "APRS", 144.390, "ERR", str(exc), "#ef4444"
+                )
+            finally:
+                self._bg_done_sig.emit("aprs")
+
+        threading.Thread(target=_worker, daemon=True, name="LiveAPRSWorker").start()
+
     def _on_live_sensors_clicked(self) -> None:
+        self.stop_live_adsb()
         self.btn_live_sensors.setEnabled(False)
-        self.add_message(time.strftime("%H:%M:%S"), "ISM_433", 433.920, "RTL_433", "Initiating live HackRF capture & rtl_433 telemetry decode (3s)...", "#38bdf8")
+        self.add_message(
+            time.strftime("%H:%M:%S"), "ISM_433", 433.920, "CAPTURE",
+            "Capturing 3s live HackRF @ 433.920 MHz -> rtl_433 telemetry decoder...", "#38bdf8",
+        )
 
         def _worker() -> None:
             try:
                 from core.demod_engine import run_telemetry_decode
                 res = run_telemetry_decode(433_920_000, duration_sec=3.0)
-                pkts = res.get("packets", [])
                 now_str = time.strftime("%H:%M:%S")
+                pkts = res.get("packets", [])
                 if pkts:
                     for p in pkts:
-                        self.add_message(now_str, "ISM_433", 433.920, str(p.get("model", "SENSOR")), json.dumps(p), "#eab308")
+                        self._bg_msg_sig.emit(
+                            now_str, "ISM_433", 433.920, str(p.get("model", "SENSOR")), json.dumps(p), "#eab308"
+                        )
+                elif not res.get("success"):
+                    self._bg_msg_sig.emit(
+                        now_str, "ISM_433", 433.920, "NOTE", str(res.get("error") or "Busy"), "#f59e0b"
+                    )
                 else:
-                    self.add_message(now_str, "ISM_433", 433.920, "MONITOR", "rtl_433 sensor receiver active • 433.920 MHz monitored (waiting for sensor burst)", "#10b981")
+                    self._bg_msg_sig.emit(
+                        now_str, "ISM_433", 433.920, "CLEAR",
+                        "3.0s rtl_433 capture clean — no OOK/FSK sensor frame during window.", "#10b981",
+                    )
             except Exception as exc:
-                self.add_message(time.strftime("%H:%M:%S"), "ISM_433", 433.920, "ERROR", f"Sensor decode note: {exc}", "#f59e0b")
+                self._bg_msg_sig.emit(
+                    time.strftime("%H:%M:%S"), "ISM_433", 433.920, "ERR", str(exc), "#ef4444"
+                )
             finally:
-                self.btn_live_sensors.setEnabled(True)
+                self._bg_done_sig.emit("sensors")
 
         threading.Thread(target=_worker, daemon=True, name="LiveSensorWorker").start()
-
-    def _on_live_tv_clicked(self) -> None:
-        self.btn_live_tv.setEnabled(False)
-        self.add_message(time.strftime("%H:%M:%S"), "ATSC_TV", 539.000, "ATSC_SCAN", "Analyzing ATSC TV Ch 25 (KOAA NBC 539 MHz) pilot carrier & spectrum...", "#38bdf8")
-
-        def _worker() -> None:
-            try:
-                from core.demod_engine import run_atsc_tv_analysis
-                res = run_atsc_tv_analysis(539_000_000)
-                now_str = time.strftime("%H:%M:%S")
-                ch = res.get("channel", 25)
-                pilot = res.get("pilot_carrier_mhz", 536.31)
-                snr = res.get("pilot_snr_db", 0.0)
-                status = "LOCKED" if res.get("pilot_detected") else "CARRIER DETECTED"
-                self.add_message(now_str, "ATSC_TV", 539.000, f"CH_{ch}", f"ATSC 1.0 {status} • Pilot: {pilot:.3f} MHz • SNR: +{snr:.1f} dB (Bandwidth: 6.0 MHz)", "#e11d48")
-            except Exception as exc:
-                self.add_message(time.strftime("%H:%M:%S"), "ATSC_TV", 539.000, "ERROR", f"TV analysis note: {exc}", "#f59e0b")
-            finally:
-                self.btn_live_tv.setEnabled(True)
-
-        threading.Thread(target=_worker, daemon=True, name="LiveTVWorker").start()
 
     def _clear_messages(self) -> None:
         self.messages.clear()

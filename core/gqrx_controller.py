@@ -139,12 +139,22 @@ class GqrxController:
         return ui_demod, rig_mode, pb_hz, lo_cut, hi_cut, maxdev
 
     @staticmethod
-    def _compute_sampling_tier(ui_demod: str, passband_hz: int, freq_hz: int) -> Tuple[str, int, int, int, int]:
+    def _compute_sampling_tier(
+        ui_demod: str,
+        passband_hz: int,
+        freq_hz: int,
+        profile_category: str = "",
+        bandwidth_hz: float = 0.0,
+    ) -> Tuple[str, int, int, int, int]:
         """
         Returns (tier_name, sample_rate_hz, decimation, analog_bw_hz, rx_offset_hz).
-        Wideband FM uses 2.4 MSPS (decim 1); Narrowband modes use 2.0 MSPS (decim 2 = 1.0 MHz zoomed view)
-        with low-HF-safe LO offset so HackRF LO never drops below 1.000 MHz.
+        - Broadcast TV / Ultra-wideband (>=4.5 MHz): 8.0 MSPS (decim 1 = full 6 MHz ATSC channel + pilot)
+        - Wideband FM: 2.4 MSPS (decim 1)
+        - Narrowband modes: 2.0 MSPS (decim 2 = 1.0 MHz zoomed view)
+          with low-HF-safe LO offset so HackRF LO never drops below 1.000 MHz.
         """
+        if profile_category == "Broadcast_TV" or bandwidth_hz >= 4_500_000 or passband_hz >= 1_500_000:
+            return "TV_WIDE", 8_000_000, 1, 6_000_000, 0
         if "WFM" in ui_demod or passband_hz >= 80_000:
             rx_off = -250_000 if freq_hz < 1_500_000 else 250_000
             return "WIDE", 2_400_000, 1, 1_750_000, rx_off
@@ -215,6 +225,8 @@ class GqrxController:
             ui_demod=ui_demod,
             passband_hz=passband_hz,
             freq_hz=freq_hz,
+            profile_category=str(getattr(signal_profile, "profile_category", "")),
+            bandwidth_hz=float(getattr(signal_profile, "bandwidth_hz", 0.0)),
         )
         saved_geom, saved_state = self._read_preserved_gui_layout()
 
@@ -487,7 +499,13 @@ class GqrxController:
         amp_db = 14 if int(getattr(signal_profile, "amp_gain", 0)) >= 7 else 0
         sql_level = float(getattr(signal_profile, "sql_level", -150.0))
         enable_rds = "WFM" in ui_demod
-        desired_tier, _, _, _, _ = self._compute_sampling_tier(ui_demod, passband_hz, freq_hz)
+        desired_tier, _, _, _, _ = self._compute_sampling_tier(
+            ui_demod,
+            passband_hz,
+            freq_hz,
+            profile_category=str(getattr(signal_profile, "profile_category", "")),
+            bandwidth_hz=float(getattr(signal_profile, "bandwidth_hz", 0.0)),
+        )
 
         cfg_file = self.generate_profile(signal_profile, compact_screen=compact_screen)
 

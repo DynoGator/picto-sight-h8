@@ -47,7 +47,7 @@ class TelemetryMeterPill(QWidget):
         self._phase = 0.0
         self.setMinimumHeight(26)
         self.setMaximumHeight(34)
-        self.setMinimumWidth(115)
+        self.setMinimumWidth(96)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def set_telemetry(
