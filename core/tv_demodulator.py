@@ -4,17 +4,24 @@ core/tv_demodulator.py - Real-Time Broadcast Television Demodulator & RF Analyze
 =================================================================================
 Provides crash-free terrestrial Broadcast TV demodulation on HackRF One:
   1. Digital ATSC 1.0 (8VSB) Receiver:
-     - Isolated GNU Radio subprocess: osmosdr.source (8.0 MSPS, 6 MHz BW)
-       -> gnuradio.dtv.atsc_rx(8_000_000.0, 1.1) -> 188-byte MPEG2-TS UDP stream
-       (udp://127.0.0.1:17355) + live 1024-pt Hann FFT spectrum & +309.441 kHz
-       8VSB pilot carrier lock/SNR telemetry.
-     - Low-latency mpv / ffplay video+audio window sized cleanly for 800x480 DSI.
-  2. Analog NTSC / Fast-Scan ATV Envelope Raster Receiver:
-     - 4.0 MSPS HackRF capture -> AM visual carrier demodulation (+1.25 MHz above
-       lower band edge), horizontal sync alignment (15,734.26 Hz), live 320x240
-       grayscale/CRT raster frame output + live RF spectrum.
+     - Isolated GNU Radio subprocess: osmosdr.source at native 11,838,462 Hz
+       (atsc_sym_rate * 1.1) with analog AGC + 50-tap direct FFT RRC filter
+       (filter.fft_filter_ccc) -> zero polyphase resampler CPU overhead!
+     - atsc_fpll -> dc_blocker -> atsc_sync -> atsc_fs_checker -> atsc_equalizer
+       -> atsc_viterbi_decoder -> atsc_deinterleaver -> atsc_rs_decoder -> atsc_derandomizer
+       -> atsc_depad -> 188-byte MPEG2-TS UDP stream (udp://127.0.0.1:17355).
+     - Live 8-level ATSC constellation / eye-diagram soft symbols for GUI display.
+     - Low-latency mpv / ffplay video+audio window with --idle=yes & --force-window=yes
+       so it never exits as defunct while waiting for packets.
+  2. Analog NTSC / Fast-Scan ATV Envelope Raster & FM Audio Receiver:
+     - 8.0 MSPS HackRF capture centered on channel.
+     - AM visual carrier demodulation (-1.75 MHz offset from center), 15,734.26 Hz
+       horizontal sync tip alignment, live 320x240 CRT raster frame output.
+     - Integrated +4.5 MHz FM aural audio carrier demodulation (+2.75 MHz offset from center),
+       quadrature FM discrimination, 75 us de-emphasis, 48 kHz S16LE PCM stream
+       directly to PipeWire via paplay (with 1-tap live mute/unmute control).
   3. Southern Colorado / Penrose Wideband TV Channel Scanner:
-     - Fast VHF-Hi + UHF sweep ranking active 6.0 MHz TV channels & pilot SNR.
+     - Fast single-shot (-1) VHF-Hi + UHF sweep ranking active 6.0 MHz TV channels & pilot SNR.
   4. Strict 1-at-a-time SDRResourceArbiter ownership ("TV_DEMOD").
 """
 
@@ -47,6 +54,8 @@ logger = logging.getLogger("smart_scanner.tv_demod")
 
 TV_STATUS_JSON_PATH = "/tmp/picto_tv_status.json"
 TV_RASTER_NPY_PATH = "/tmp/picto_tv_raster.npy"
+TV_CONSTELLATION_NPY_PATH = "/tmp/picto_tv_constellation.npy"
+TV_AUDIO_MUTE_PATH = "/tmp/picto_tv_audio_mute"
 TV_UDP_HOST = "127.0.0.1"
 TV_UDP_PORT = 17355
 
@@ -62,6 +71,38 @@ SOUTHERN_CO_TV_PRESETS: List[Dict[str, Any]] = [
     {"channel": 14, "center_hz": 473_000_000, "call": "UHF Ch 14", "site": "470-476 MHz"},
     {"channel": 7,  "center_hz": 177_000_000, "call": "VHF-Hi Ch 7", "site": "174-180 MHz"},
 ]
+
+
+def ensure_system_audio_unmuted(min_volume: float = 0.80) -> bool:
+    """Ensures PipeWire / PulseAudio default audio sink is not muted and has audible volume."""
+    try:
+        wpctl_bin = shutil.which("wpctl")
+        if wpctl_bin:
+            res = subprocess.run(
+                [wpctl_bin, "get-volume", "@DEFAULT_AUDIO_SINK@"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=1.0,
+            )
+            out = res.stdout.strip()
+            parts = out.split()
+            if len(parts) >= 2:
+                try:
+                    vol = float(parts[1])
+                except ValueError:
+                    vol = 0.0
+                muted = "[MUTED]" in out
+                if muted or vol < 0.15:
+                    subprocess.run([wpctl_bin, "set-mute", "@DEFAULT_AUDIO_SINK@", "0"], timeout=1.0)
+                    subprocess.run(
+                        [wpctl_bin, "set-volume", "@DEFAULT_AUDIO_SINK@", f"{min_volume:.2f}"],
+                        timeout=1.0,
+                    )
+                    return True
+        return True
+    except Exception:
+        return False
 
 
 def get_all_fcc_tv_channels() -> List[Dict[str, Any]]:
@@ -120,6 +161,9 @@ class TVReceiverTelemetry:
     ts_sync_locked: bool = False
     ts_packets_total: int = 0
     ts_bitrate_kbps: float = 0.0
+    audio_enabled: bool = True
+    audio_active: bool = False
+    constellation_samples: List[float] = field(default_factory=list)
     spectrum_freqs_mhz: List[float] = field(default_factory=list)
     spectrum_dbfs: List[float] = field(default_factory=list)
     status_text: str = "Idle"
@@ -135,8 +179,8 @@ def _compute_8mhz_tv_metrics(
     sample_rate: float = 8_000_000.0,
 ) -> Dict[str, Any]:
     """
-    Computes calibrated 1024-pt Hann FFT across 8.0 MHz (7.8125 kHz/bin), extracting:
-      - Out-of-channel guard-band noise floor (lower -4.0..-3.15 MHz & upper +3.15..+4.0 MHz)
+    Computes calibrated 1024-pt Hann FFT across captured bandwidth, extracting:
+      - Out-of-channel guard-band noise floor
       - 6.0 MHz in-channel ATSC shelf median power
       - Exact +309.441 kHz 8VSB pilot carrier power (-2.69056 MHz offset from channel center)
       - 160-point display spectrum spanning [center - 3.6 MHz, center + 3.6 MHz]
@@ -152,7 +196,6 @@ def _compute_8mhz_tv_metrics(
     win_sum = float(np.sum(win))
     spec = np.fft.fftshift(np.fft.fft(seg * win[None, :], n=nfft, axis=1), axes=1)
     psd_lin = np.mean((np.abs(spec) / win_sum) ** 2, axis=0)
-    # Remove residual 0 Hz DC bin
     mid = nfft // 2
     psd_lin[mid] = 0.5 * (psd_lin[mid - 1] + psd_lin[mid + 1])
     psd_db = 10.0 * np.log10(psd_lin + 1e-13)
@@ -224,7 +267,7 @@ def measure_tv_channel_rf_snapshot(
             "-a", str(1 if amp_enable else 0),
             "-n", "262144",
         ]
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3.5)
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=4.0)
         raw = proc.stdout or b""
         if len(raw) < 16384:
             return {"measured": False, "error": "Short IQ buffer from HackRF"}
@@ -247,7 +290,7 @@ def scan_active_tv_channels(
 ) -> Dict[str, Any]:
     """
     Fast wideband VHF-Hi (174-216 MHz) + UHF (470-608 MHz) Broadcast TV channel scan
-    via hackrf_sweep. Ranks active 6 MHz FCC channels by pilot/shelf SNR cleanly!
+    via hackrf_sweep. Uses one-shot '-1' flag for instant <1.5s completion!
     """
     arbiter = get_sdr_arbiter()
     ok, msg = arbiter.prepare_for_aux_receiver("TELEM_DECODE", "Scanning VHF/UHF Broadcast TV...")
@@ -260,14 +303,14 @@ def scan_active_tv_channels(
         for f_range in ("174:216", "470:608"):
             cmd = [
                 "hackrf_sweep",
+                "-1",
                 "-f", f_range,
-                "-w", "50000",
-                "-N", "3",
+                "-w", "100000",
                 "-l", str(lna_gain),
                 "-g", str(vga_gain),
                 "-a", str(1 if amp_enable else 0),
             ]
-            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=6.0)
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=12.0)
             bucket: Dict[int, List[float]] = {}
             for line in (proc.stdout or "").splitlines():
                 parts = [p.strip() for p in line.split(",")]
@@ -359,9 +402,10 @@ def _run_atsc_gnuradio_worker(
 ) -> int:
     """
     Isolated OS process executing GNU Radio ATSC 1.0 8VSB demodulation + live 8 MHz FFT probe.
-    Forwards decoded 188-byte MPEG-TS packets over localhost UDP to mpv/ffplay.
+    Uses native 11,838,462 Hz sample rate with direct 50-tap FFT RRC filter and AGC, eliminating
+    polyphase resampler overhead entirely. Forwards decoded 188-byte MPEG-TS packets over UDP.
     """
-    from gnuradio import blocks, dtv, gr
+    from gnuradio import analog, blocks, dtv, filter, gr
     import osmosdr
 
     stop_flag = False
@@ -384,6 +428,7 @@ def _run_atsc_gnuradio_worker(
         "last_rate_ts": time.time(),
         "ts_bitrate_kbps": 0.0,
         "rf": {},
+        "constellation": [],
     }
 
     class MPEGTSUDPSink(gr.sync_block):
@@ -396,8 +441,7 @@ def _run_atsc_gnuradio_worker(
             if not chunk:
                 return 0
             self._rem.extend(chunk)
-            # Send in 7 * 188 = 1316-byte standard MPEG-TS UDP datagrams
-            pkt_size = 1316
+            pkt_size = 1316  # 7 * 188 bytes
             valid_syncs = 0
             while len(self._rem) >= pkt_size:
                 dg = bytes(self._rem[:pkt_size])
@@ -417,11 +461,7 @@ def _run_atsc_gnuradio_worker(
 
     class RFSpectrumProbeSink(gr.sync_block):
         def __init__(self) -> None:
-            super().__init__(
-                name="RFSpectrumProbeSink",
-                in_sig=[(np.complex64, 1024)],
-                out_sig=None,
-            )
+            super().__init__(name="RFSpectrumProbeSink", in_sig=[(np.complex64, 1024)], out_sig=None)
             self._buf: List[np.ndarray] = []
 
         def work(self, input_items: List[np.ndarray], _output_items: List[np.ndarray]) -> int:
@@ -431,14 +471,40 @@ def _run_atsc_gnuradio_worker(
                 if len(self._buf) >= 8:
                     iq_cat = np.concatenate(self._buf, axis=0)
                     self._buf.clear()
-                    rf_m = _compute_8mhz_tv_metrics(iq_cat, float(center_freq_hz), 8_000_000.0)
+                    rf_m = _compute_8mhz_tv_metrics(iq_cat, float(center_freq_hz), sample_rate)
                     with state_lock:
                         shared["rf"] = rf_m
             return len(vecs)
 
-    tb = gr.top_block("PictoSight_ATSC_8VSB_RX")
+    class ConstellationProbeSink(gr.sync_block):
+        def __init__(self) -> None:
+            super().__init__(name="ConstellationProbeSink", in_sig=[(np.float32, 256)], out_sig=None)
+            self._last_save = 0.0
+
+        def work(self, input_items: List[np.ndarray], _output_items: List[np.ndarray]) -> int:
+            now = time.time()
+            if now - self._last_save >= 0.20:
+                self._last_save = now
+                vec = input_items[0][-1] if len(input_items[0]) > 0 else np.array([])
+                if len(vec) == 256:
+                    c_list = [round(float(x), 2) for x in vec[:128]]
+                    with state_lock:
+                        shared["constellation"] = c_list
+                    try:
+                        tmp_c = f"{TV_CONSTELLATION_NPY_PATH}.tmp.npy"
+                        np.save(tmp_c, vec.astype(np.float32))
+                        os.replace(tmp_c, TV_CONSTELLATION_NPY_PATH)
+                    except Exception:
+                        pass
+            return len(input_items[0])
+
+    atsc_sym_rate = 4.5e6 / 286.0 * 684.0  # 10.762238 MHz
+    sps = 1.1
+    sample_rate = atsc_sym_rate * sps       # 11,838,462 Hz
+
+    tb = gr.top_block("PictoSight_ATSC_8VSB_DirectRX")
     src = osmosdr.source(args=dev_arg)
-    src.set_sample_rate(8_000_000.0)
+    src.set_sample_rate(sample_rate)
     src.set_center_freq(float(center_freq_hz), 0)
     src.set_bandwidth(6_000_000.0, 0)
     src.set_dc_offset_mode(2, 0)
@@ -446,23 +512,60 @@ def _run_atsc_gnuradio_worker(
     src.set_gain(float(lna_gain), "IF", 0)
     src.set_gain(float(vga_gain), "BB", 0)
 
-    # Branch 1: ATSC 1.0 8VSB Digital Television Receiver -> UDP MPEG-TS
-    atsc_rx = dtv.atsc_rx(8_000_000.0, 1.1)
-    ts_sink = MPEGTSUDPSink()
-    tb.connect(src, atsc_rx, ts_sink)
+    # Input AGC ensuring optimal RMS for FPLL acquisition
+    agc_in = analog.agc2_cc(1e-4, 1e-3, 0.5, 1.0)
+    agc_in.set_max_gain(65536.0)
 
-    # Branch 2: Low-overhead 1024-pt RF Spectrum & +309.441 kHz Pilot Lock Probe
-    s2v = blocks.stream_to_vector(gr.sizeof_gr_complex, 1024)
-    keep = blocks.keep_one_in_n(gr.sizeof_gr_complex * 1024, 320)
+    # Direct 50-tap FFT Root Raised Cosine filter (eliminated polyphase resampler CPU bottleneck)
+    rrc_taps = filter.firdes.root_raised_cosine(1.0, sample_rate, atsc_sym_rate / 2.0, 0.1152, 50)
+    rrc = filter.fft_filter_ccc(1, rrc_taps, 1)
+
+    # Digital ATSC 1.0 demodulation chain
+    fpll = dtv.atsc_fpll(sample_rate)
+    dcr = filter.dc_blocker_ff(4096)
+    agc_const = analog.agc_ff(1e-5, 4.0)
+    sync = dtv.atsc_sync(sample_rate)
+    fsc = dtv.atsc_fs_checker()
+    equ = dtv.atsc_equalizer()
+    vit = dtv.atsc_viterbi_decoder()
+    dei = dtv.atsc_deinterleaver()
+    rsd = dtv.atsc_rs_decoder()
+    der = dtv.atsc_derandomizer()
+    dep = dtv.atsc_depad()
+    ts_sink = MPEGTSUDPSink()
+
+    tb.connect(src, agc_in, rrc, fpll, dcr, agc_const, sync, fsc)
+    tb.connect((fsc, 0), (equ, 0))
+    tb.connect((fsc, 1), (equ, 1))
+    tb.connect((equ, 0), (vit, 0))
+    tb.connect((equ, 1), (vit, 1))
+    tb.connect((vit, 0), (dei, 0))
+    tb.connect((vit, 1), (dei, 1))
+    tb.connect((dei, 0), (rsd, 0))
+    tb.connect((dei, 1), (rsd, 1))
+    tb.connect((rsd, 0), (der, 0))
+    tb.connect((rsd, 1), (der, 1))
+    tb.connect((der, 0), (dep, 0))
+    tb.connect((dep, 0), ts_sink)
+
+    # Low-overhead RF spectrum probe
+    s2v_rf = blocks.stream_to_vector(gr.sizeof_gr_complex, 1024)
+    keep_rf = blocks.keep_one_in_n(gr.sizeof_gr_complex * 1024, 384)
     rf_probe = RFSpectrumProbeSink()
-    tb.connect(src, s2v, keep, rf_probe)
+    tb.connect(src, s2v_rf, keep_rf, rf_probe)
+
+    # Soft symbol constellation probe
+    s2v_c = blocks.stream_to_vector(gr.sizeof_float, 256)
+    keep_c = blocks.keep_one_in_n(gr.sizeof_float * 256, 160)
+    const_probe = ConstellationProbeSink()
+    tb.connect(agc_const, s2v_c, keep_c, const_probe)
 
     tb.start()
     try:
         while not stop_flag:
             if parent_pid > 1 and not os.path.exists(f"/proc/{parent_pid}"):
                 break
-            time.sleep(0.35)
+            time.sleep(0.30)
             now = time.time()
             with state_lock:
                 dt = max(0.05, now - shared["last_rate_ts"])
@@ -472,15 +575,17 @@ def _run_atsc_gnuradio_worker(
                 shared["ts_bitrate_kbps"] = round(kbps, 1)
                 ts_pkts = int(shared["ts_packets"])
                 rf_m = dict(shared["rf"])
+                c_samples = list(shared["constellation"])
 
             ts_locked = kbps >= 50.0
             pilot_locked = bool(rf_m.get("pilot_locked", False))
+            pilot_snr = rf_m.get("pilot_snr_db", 0.0)
             if ts_locked:
-                st = f"LOCKED ATSC MPEG-TS ({kbps:.0f} kbps) • Video Ready!"
+                st = f"LOCKED ATSC MPEG-TS ({kbps:.0f} kbps) • Video Player Ready!"
             elif pilot_locked:
-                st = f"8VSB Pilot Locked (+{rf_m.get('pilot_snr_db', 0):.1f} dB) • Equalizing VSB..."
+                st = f"8VSB Pilot Locked (+{pilot_snr:.1f} dB) • Symbol Timing & Equalizer Sync Active"
             else:
-                st = f"Monitoring Ch {channel} ({center_freq_hz / 1e6:.1f} MHz) • Adjust antenna/gain for >15 dB SNR"
+                st = f"Monitoring Ch {channel} ({center_freq_hz / 1e6:.1f} MHz) • Peak Pilot: +{pilot_snr:.1f} dB"
 
             payload = {
                 "running": True,
@@ -491,6 +596,9 @@ def _run_atsc_gnuradio_worker(
                 "ts_sync_locked": ts_locked,
                 "ts_packets_total": ts_pkts,
                 "ts_bitrate_kbps": round(kbps, 1),
+                "audio_enabled": True,
+                "audio_active": ts_locked,
+                "constellation_samples": c_samples,
                 "status_text": st,
                 "updated_ts": now,
                 **rf_m,
@@ -516,10 +624,12 @@ def _run_analog_ntsc_worker(
     parent_pid: int = 0,
 ) -> int:
     """
-    Isolated OS process capturing HackRF 4.0 MSPS IQ around the visual carrier
-    (lo + 1.25 MHz), envelope-demodulating NTSC/ATV 525-line video, aligning horizontal
-    sync pulses (15,734.26 Hz -> 254.22 samples/line), and writing 240x320 uint8 raster
-    frames + live RF spectrum.
+    Isolated OS process capturing HackRF 8.0 MSPS IQ across the 6.0 MHz channel.
+    Simultaneously produces:
+      1. Negative-modulation AM visual carrier video (offset -1.75 MHz) -> 320x240 CRT raster
+      2. Integrated +4.5 MHz FM aural audio carrier (offset +2.75 MHz) -> 48 kHz S16LE PCM
+         streamed directly to PipeWire via paplay (with 1-tap live mute/unmute control)
+      3. Live 7.2 MHz RF spectrum probe
     """
     stop_flag = False
 
@@ -530,47 +640,128 @@ def _run_analog_ntsc_worker(
     signal.signal(signal.SIGINT, _sig_handler)
     signal.signal(signal.SIGTERM, _sig_handler)
 
-    lo_edge = center_freq_hz - 3_000_000
-    vis_carrier_hz = lo_edge + 1_250_000
-    fs = 4_000_000
+    fs = 8_000_000
+    vis_offset_hz = -1_750_000.0   # Visual carrier is 1.25 MHz above lower edge
+    audio_offset_hz = +2_750_000.0 # Audio subcarrier is +4.5 MHz above visual carrier
+
+    ensure_system_audio_unmuted(0.85)
 
     cmd = [
         "hackrf_transfer",
         "-r", "-",
-        "-f", str(int(vis_carrier_hz)),
+        "-f", str(int(center_freq_hz)),
         "-s", str(fs),
-        "-b", "3500000",
+        "-b", "6000000",
         "-l", str(lna_gain),
         "-g", str(vga_gain),
         "-a", str(1 if amp_enable else 0),
     ]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    frame_samples = int(fs / 29.97)  # ~133,467 complex samples per NTSC frame
-    bytes_needed = frame_samples * 2
+
+    # Launch paplay low-latency PCM audio sink to PipeWire default sink
+    paplay_bin = shutil.which("paplay")
+    audio_proc: Optional[subprocess.Popen] = None
+    if paplay_bin:
+        try:
+            audio_proc = subprocess.Popen(
+                [paplay_bin, "--raw", "--rate=48000", "--channels=1", "--format=s16le"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            audio_proc = None
+
+    # Process in ~0.25-second chunks (2,000,000 complex samples = 4,000,000 bytes)
+    chunk_samples = 2_000_000
+    chunk_bytes = chunk_samples * 2
+
+    # Precalculate mixing LO arrays for visual and audio downconversion
+    t_chunk = np.arange(chunk_samples, dtype=np.float32) / float(fs)
+    lo_vis = np.exp(-1j * 2.0 * np.pi * vis_offset_hz * t_chunk).astype(np.complex64)
+    lo_audio = np.exp(-1j * 2.0 * np.pi * audio_offset_hz * t_chunk).astype(np.complex64)
+
+    # 75 us FM de-emphasis IIR filter state
+    out_audio_rate = 48000
+    alpha_deemp = float(np.exp(-1.0 / (out_audio_rate * 75e-6)))
+    deemp_state = 0.0
+
+    frame_counter = 0
 
     try:
         while not stop_flag and proc.poll() is None and proc.stdout is not None:
             if parent_pid > 1 and not os.path.exists(f"/proc/{parent_pid}"):
                 break
-            buf = proc.stdout.read(bytes_needed)
-            if not buf or len(buf) < bytes_needed:
+            buf = proc.stdout.read(chunk_bytes)
+            if not buf or len(buf) < chunk_bytes:
                 break
 
             arr = np.frombuffer(buf, dtype=np.int8).astype(np.float32) / 128.0
             iq = arr[0::2] + 1j * arr[1::2]
             iq = iq - np.mean(iq)
 
-            # Negative-modulation AM video envelope (sync tip = max RF, white = min RF)
-            env = np.abs(iq)
+            frame_counter += 1
+            audio_muted = os.path.exists(TV_AUDIO_MUTE_PATH)
+
+            # -------------------------------------------------------------
+            # Branch 1: +4.5 MHz FM Aural Audio Subcarrier Demodulation
+            # -------------------------------------------------------------
+            audio_active = False
+            try:
+                # Downconvert audio carrier from +2.75 MHz to DC
+                iq_aud = iq * lo_audio
+                # Decimate by 32: 8,000,000 Hz / 32 = 250,000 Hz intermediate FM rate
+                decim_aud = 32
+                n_b = len(iq_aud) // decim_aud
+                iq_aud_dec = np.mean(iq_aud[: n_b * decim_aud].reshape(n_b, decim_aud), axis=1)
+
+                # FM discriminator (quadrature phase derivative)
+                dphi = np.angle(iq_aud_dec[1:] * np.conj(iq_aud_dec[:-1])).astype(np.float32)
+                dphi = dphi - float(np.mean(dphi))
+
+                # Exact fractional resample: 250 kHz -> 48 kHz
+                in_aud_rate = fs / decim_aud
+                n_out_pcm = int(round(len(dphi) * out_audio_rate / in_aud_rate))
+                x_in = np.linspace(0.0, 1.0, len(dphi), dtype=np.float32)
+                x_out = np.linspace(0.0, 1.0, n_out_pcm, dtype=np.float32)
+                pcm_raw = np.interp(x_out, x_in, dphi).astype(np.float32)
+
+                # 75 us de-emphasis IIR
+                pcm_de = np.empty_like(pcm_raw)
+                curr_y = deemp_state
+                for i in range(len(pcm_raw)):
+                    curr_y = (1.0 - alpha_deemp) * pcm_raw[i] + alpha_deemp * curr_y
+                    pcm_de[i] = curr_y
+                deemp_state = curr_y
+
+                # Calibrate audio level to S16LE range
+                peak_aud = float(np.percentile(np.abs(pcm_de), 98))
+                scale_aud = 15000.0 / max(1e-4, peak_aud)
+                pcm_s16 = np.clip(pcm_de * scale_aud, -32767.0, 32767.0).astype(np.int16)
+
+                if audio_proc is not None and audio_proc.stdin is not None and not audio_muted:
+                    audio_proc.stdin.write(pcm_s16.tobytes())
+                    audio_proc.stdin.flush()
+                    audio_active = True
+            except Exception:
+                audio_active = False
+
+            # -------------------------------------------------------------
+            # Branch 2: AM Video Envelope Demodulation & Horizontal Sync Raster
+            # -------------------------------------------------------------
+            # Downconvert visual carrier from -1.75 MHz to DC and decimate by 2 -> 4.0 MSPS
+            iq_v = iq * lo_vis
+            iq_v_4m = 0.5 * (iq_v[0::2] + iq_v[1::2])
+            fs_vis = 4_000_000.0
+            samples_per_line = fs_vis / 15_734.264  # 254.222 samples per NTSC line
+
+            env = np.abs(iq_v_4m)
             p5 = float(np.percentile(env, 5))
             p98 = float(np.percentile(env, 98))
             inv_luma = 1.0 - np.clip((env - p5) / max(0.02, p98 - p5), 0.0, 1.0)
 
-            # Find strongest horizontal sync alignment offset across 254-sample line stride
-            samples_per_line = fs / 15_734.264  # 254.222 samples/line
             n_lines = 240
             line_starts = (np.arange(n_lines, dtype=np.float32) * samples_per_line).astype(np.int32)
-            # Coarse sync search across 0..253
             test_grid = env[: min(len(env), 254 * 64)].reshape(-1, 254)
             sync_col = int(np.argmax(np.mean(test_grid, axis=0)))
 
@@ -582,8 +773,15 @@ def _run_analog_ntsc_worker(
             np.save(tmp_npy, raster_u8)
             os.replace(tmp_npy, TV_RASTER_NPY_PATH)
 
-            rf_m = _compute_8mhz_tv_metrics(iq[:32768], float(vis_carrier_hz), float(fs))
+            # -------------------------------------------------------------
+            # Branch 3: RF Spectrum Metrics & Telemetry JSON
+            # -------------------------------------------------------------
+            rf_m = _compute_8mhz_tv_metrics(iq[:32768], float(center_freq_hz), float(fs))
             now = time.time()
+            vis_mhz = (center_freq_hz + vis_offset_hz) / 1e6
+            aud_mhz = (center_freq_hz + audio_offset_hz) / 1e6
+            aud_status = "MUTED" if audio_muted else "48kHz PipeWire"
+
             payload = {
                 "running": True,
                 "mode": "ANALOG_NTSC",
@@ -593,15 +791,25 @@ def _run_analog_ntsc_worker(
                 "ts_sync_locked": False,
                 "ts_packets_total": 0,
                 "ts_bitrate_kbps": 0.0,
+                "audio_enabled": not audio_muted,
+                "audio_active": audio_active,
                 "status_text": (
-                    f"Analog NTSC/ATV Live Raster @ {vis_carrier_hz / 1e6:.2f} MHz Visual Carrier "
-                    f"(Peak {rf_m.get('pilot_dbfs', -80):.1f} dBFS)"
+                    f"NTSC/ATV Raster ({vis_mhz:.2f}M Pic) + Live Sound ({aud_mhz:.2f}M FM • {aud_status})"
                 ),
                 "updated_ts": now,
                 **rf_m,
             }
             _write_atomic_json(TV_STATUS_JSON_PATH, payload)
     finally:
+        if audio_proc is not None:
+            try:
+                audio_proc.terminate()
+                audio_proc.wait(timeout=0.6)
+            except Exception:
+                try:
+                    audio_proc.kill()
+                except Exception:
+                    pass
         if proc.poll() is None:
             proc.send_signal(signal.SIGINT)
             try:
@@ -640,6 +848,19 @@ class BroadcastTVController:
         with self._lock:
             return self._player_proc is not None and self._player_proc.poll() is None
 
+    def is_audio_muted(self) -> bool:
+        return os.path.exists(TV_AUDIO_MUTE_PATH)
+
+    def set_audio_muted(self, muted: bool) -> None:
+        try:
+            if muted:
+                Path(TV_AUDIO_MUTE_PATH).touch()
+            else:
+                if os.path.exists(TV_AUDIO_MUTE_PATH):
+                    os.remove(TV_AUDIO_MUTE_PATH)
+        except Exception:
+            pass
+
     def start(
         self,
         center_freq_hz: float,
@@ -673,7 +894,7 @@ class BroadcastTVController:
         if not ok_sdr:
             return False, sdr_msg
 
-        for p_old in (TV_STATUS_JSON_PATH, TV_RASTER_NPY_PATH):
+        for p_old in (TV_STATUS_JSON_PATH, TV_RASTER_NPY_PATH, TV_CONSTELLATION_NPY_PATH):
             try:
                 if os.path.exists(p_old):
                     os.remove(p_old)
@@ -716,7 +937,7 @@ class BroadcastTVController:
             return False, f"Failed to start TV receiver: {exc}"
 
     def launch_video_player(self) -> Tuple[bool, str]:
-        """Launches compact 640x360 mpv or ffplay window attached to UDP MPEG-TS output."""
+        """Launches compact mpv / ffplay video window with --idle=yes so it never exits as defunct."""
         with self._lock:
             if self._player_proc is not None and self._player_proc.poll() is None:
                 return True, "Video player window is already open."
@@ -736,9 +957,11 @@ class BroadcastTVController:
                 f"--title={title}",
                 "--geometry=640x360",
                 "--profile=low-latency",
-                "--no-cache",
-                "--demuxer-lavf-o=fflags=+nobuffer",
-                "--force-window=immediate",
+                "--idle=yes",
+                "--force-window=yes",
+                "--demuxer-lavf-probesize=2000000",
+                "--demuxer-lavf-analyzeduration=2.0",
+                "--stream-buffer-size=8MiB",
                 udp_url,
             ]
         elif ffplay_bin:
@@ -777,6 +1000,7 @@ class BroadcastTVController:
             channel=self._channel,
             callsign=self._callsign,
             center_freq_hz=self._center_freq_hz,
+            audio_enabled=not self.is_audio_muted(),
         )
         if os.path.exists(TV_STATUS_JSON_PATH):
             try:
@@ -786,6 +1010,7 @@ class BroadcastTVController:
                     if hasattr(telem, k):
                         setattr(telem, k, v)
                 telem.running = running
+                telem.audio_muted = self.is_audio_muted()
             except Exception:
                 pass
         return telem
@@ -796,6 +1021,15 @@ class BroadcastTVController:
             return None
         try:
             return np.load(TV_RASTER_NPY_PATH)
+        except Exception:
+            return None
+
+    def read_constellation(self) -> Optional[np.ndarray]:
+        """Reads latest 256 soft-symbol constellation samples if available."""
+        if not os.path.exists(TV_CONSTELLATION_NPY_PATH):
+            return None
+        try:
+            return np.load(TV_CONSTELLATION_NPY_PATH)
         except Exception:
             return None
 

@@ -1,22 +1,22 @@
-# Picto-Sight H8 (`picto-sight-h8`) — v3.1.0 *"Ultra-Zoom-Spectrum"*
+# Picto-Sight H8 (`picto-sight-h8`) — v3.1.1 *"Broadcast-TV-Overhaul"*
 
-[![Version: 3.1.0](https://img.shields.io/badge/Version-3.1.0%20Ultra--Zoom--Spectrum-ff1744.svg)](CHANGELOG.md)
+[![Version: 3.1.1](https://img.shields.io/badge/Version-3.1.1%20Broadcast--TV--Overhaul-ff1744.svg)](CHANGELOG.md)
 [![OS: Debian 13 Trixie](https://img.shields.io/badge/OS-Debian%2013%20Trixie%20%7C%20RPi%20OS%20ARM64-d70a53.svg)](docs/INSTALL_TRIXIE.md)
 [![NPU: Hailo-8 26 TOPS](https://img.shields.io/badge/NPU-Hailo--8%2026%20TOPS%20(100.0%25%20Acc)-00e676.svg)](#1-4-stage-multi-layer-zoom-refinement--10-class-hailo-8-npu-1000-accuracy)
 [![Resolution: 1024x DSP Zoom](https://img.shields.io/badge/Resolution-1024x%20DSP%20Zoom%20(7.63%20Hz%2Fbin)-7c4dff.svg)](#1-4-stage-multi-layer-zoom-refinement--10-class-hailo-8-npu-1000-accuracy)
 [![SDR: HackRF One](https://img.shields.io/badge/SDR-HackRF%20One%20(1--6000%20MHz)-ffb300.svg)](#2-strict-1-at-a-time-sdr-arbiter--non-root-usb-exorcism-coresdr_arbiterpy)
 [![Receiver: Gqrx 2.17+](https://img.shields.io/badge/Receiver-Gqrx%202.17%2B%20Clickable%20Links-00b0ff.svg)](#3-native-gqrx-217-profile-synthesis--verified-live-tuning-coregqrx_controllerpy)
-[![Demod: ATSC TV | NTSC | ADS-B | CTCSS](https://img.shields.io/badge/Demod-ATSC%208VSB%20%7C%20NTSC%20%7C%20ADS--B%20%7C%20CTCSS-00e5ff.svg)](#4-multi-tool-video-radar--telemetry-demodulation-suite)
+[![Demod: ATSC TV | NTSC + Audio | ADS-B | CTCSS](https://img.shields.io/badge/Demod-ATSC%208VSB%20%7C%20NTSC%20%2B%20Audio%20%7C%20ADS--B-00e5ff.svg)](#4-multi-tool-video-radar--telemetry-demodulation-suite)
 [![Tests: 45/45 Passing](https://img.shields.io/badge/Tests-45%2F45%20Passing-brightgreen.svg)](#verification--automated-test-suite)
 [![License: MIT](https://img.shields.io/badge/License-MIT-00e5ff.svg)](LICENSE)
 
 > *"Because manually typing 32-digit hex serials into Gqrx while `readsb` hot-wires your HackRF One in the dark and a 48 MHz crystal harmonic convinces you that you've found a numbers station is not 'signals intelligence'—it's a cry for help."*
 
-**Picto-Sight H8** is a production-ready, hardware-accelerated **AI Smart RF Scanner, 1,024× Ultra-Zoom DSP Spectrum Analyzer (7.63 Hz/bin Welch PSD, 244 Hz/bin micro-waterfall), 10-Class Spectrogram Pictogram Classifier (`100.0%` Hailo-8 PCIe NPU validation accuracy), Live Terrestrial ATSC 8VSB / Analog NTSC Television Receiver, Live 1090 MHz ADS-B Tactical Radar, POCSAG/APRS/IoT Telemetry Decoder, and 1-Click Interactive Gqrx 2.17+ Live Audio Controller** built for **Raspberry Pi 5** running **Raspberry Pi OS / Debian 13 (Trixie)**.
+**Picto-Sight H8** is a production-ready, hardware-accelerated **AI Smart RF Scanner, 1,024× Ultra-Zoom DSP Spectrum Analyzer (7.63 Hz/bin Welch PSD, 244 Hz/bin micro-waterfall), 10-Class Spectrogram Pictogram Classifier (`100.0%` Hailo-8 PCIe NPU validation accuracy), Live Terrestrial ATSC 8VSB / Analog NTSC Television Receiver with FM Aural Sound Demodulation & 8-Level Constellation, Live 1090 MHz ADS-B Tactical Radar, POCSAG/APRS/IoT Telemetry Decoder, and 1-Click Interactive Gqrx 2.17+ Live Audio Controller** built for **Raspberry Pi 5** running **Raspberry Pi OS / Debian 13 (Trixie)**.
 
 Engineered from the bare metal up for both **5-inch `800×480` DSI touch cyberdecks** and **1080p+ 4-pane HDMI SIGINT workstations**, Picto-Sight H8 defaults to comprehensive multi-pass Full Spectrum sweeps (`1 MHz – 6000 MHz`, $\ge 2$ whole minutes of rigorous multi-pass dwell) and turns raw electromagnetic chaos into an ordered, legally gated, 1-tap clickable cockpit—with zero USB contention, zero `crash=true` Gqrx popups, and zero patience for unmodulated clock spurs.
 
-📚 **Documentation Suite**: [**Debian 13 Trixie Install Guide**](docs/INSTALL_TRIXIE.md) • [**Operator & Cyberdeck Field Manual**](docs/OPERATOR_GUIDE.md) • [**Changelog (`v3.1.0`)**](CHANGELOG.md)
+📚 **Documentation Suite**: [**Debian 13 Trixie Install Guide**](docs/INSTALL_TRIXIE.md) • [**Operator & Cyberdeck Field Manual**](docs/OPERATOR_GUIDE.md) • [**Changelog (`v3.1.1`)**](CHANGELOG.md)
 
 ---
 
@@ -35,7 +35,7 @@ Zero clipping, zero horizontal scrollbars, and finger-friendly controls tuned to
 | ![DSI Controls Tab](docs/images/ui_dsi_controls.png) | ![DSI Live RF & AI Tab](docs/images/ui_dsi_live_rf_ai.png) |
 | **Tab 3 (`3:Signals`): Filter Pills & Live Gqrx Stereo Audio** | **Tab 4 (`4:Profiles`): Reboot-Persistent GPS Location Archives** |
 | ![DSI Signals Table & Live Gqrx](docs/images/ui_dsi_signals_gqrx_live.png) | ![DSI Saved GPS Profiles](docs/images/ui_dsi_profiles.png) |
-| **Live ATSC 1.0 (`8VSB`) Broadcast TV & `+309 kHz` Pilot Lock** | **Live Analog NTSC (`525-Line`) CRT Raster Monitor** |
+| **Live ATSC 1.0 (`8VSB`) Broadcast TV & 8-Level Constellation** | **Live Analog NTSC (`525-Line`) CRT Raster & FM Audio** |
 | ![DSI Broadcast TV ATSC 8VSB](docs/images/ui_dsi_tv_atsc.png) | ![DSI Broadcast TV Analog NTSC](docs/images/ui_dsi_tv_ntsc.png) |
 | **Tab 5 (`5:Radar`): Live `1090 MHz` ADS-B Tactical Airspace Scope** | **Penrose / Fremont County (`DM78vj`) Live VHF/UHF Intercepts** |
 | ![DSI Tactical Radar & Telemetry Map](docs/images/ui_live_radar_map.png) | ![DSI Penrose Live Signals](docs/images/ui_live_signals_penrose.png) |
@@ -52,11 +52,11 @@ curl -fsSL https://raw.githubusercontent.com/DynoGator/picto-sight-h8/main/insta
 ```
 
 ### Method 2 — Native Debian 13 (Trixie) `.deb` Package (`arm64`)
-Download `picto-sight-h8_3.1.0-1.trixie_arm64.deb` from [**GitHub Releases (`v3.1.0`)**](https://github.com/DynoGator/picto-sight-h8/releases/latest) (or build it locally via `./packaging/build_deb.sh`) and install with `apt`:
+Download `picto-sight-h8_3.1.1-1.trixie_arm64.deb` from [**GitHub Releases (`v3.1.1`)**](https://github.com/DynoGator/picto-sight-h8/releases/latest) (or build it locally via `./packaging/build_deb.sh`) and install with `apt`:
 
 ```bash
 sudo apt update
-sudo apt install -y ./picto-sight-h8_3.1.0-1.trixie_arm64.deb
+sudo apt install -y ./picto-sight-h8_3.1.1-1.trixie_arm64.deb
 picto-sight --doctor
 ```
 

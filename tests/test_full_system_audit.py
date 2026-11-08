@@ -266,13 +266,14 @@ class TestFullSystemAudit(unittest.TestCase):
         self.assertLessEqual(dlg.width(), 800)
         self.assertLessEqual(dlg.height(), 444)
 
-        # Feed synthetic 8.0 MSPS ATSC 8VSB spectrum + pilot lock
+        # Feed synthetic 8.0 MSPS ATSC 8VSB spectrum + pilot lock + 8-level constellation samples
         f_mhz = np.linspace(535.0, 543.0, 256, dtype=np.float32)
         p_db = np.full_like(f_mhz, -84.0)
         in_ch = (f_mhz >= 536.31) & (f_mhz <= 541.69)
         p_db[in_ch] = -52.0
         pilot_idx = int(np.argmin(np.abs(f_mhz - 536.309441)))
         p_db[pilot_idx] = -36.0
+        synthetic_const = np.random.choice([-7.0, -5.0, -3.0, -1.0, 1.0, 3.0, 5.0, 7.0], size=128)
         telem = TVReceiverTelemetry(
             running=True,
             mode="ATSC_8VSB",
@@ -284,13 +285,23 @@ class TestFullSystemAudit(unittest.TestCase):
             mer_est_db=19.2,
             pilot_locked=True,
             ts_bitrate_kbps=19392.0,
+            audio_enabled=True,
+            audio_active=True,
+            constellation_samples=synthetic_const.tolist(),
             spectrum_freqs_mhz=f_mhz.tolist(),
             spectrum_dbfs=p_db.tolist(),
         )
-        dlg.canvas.update_state(telem)
+        dlg.canvas.update_state(telem, constellation=synthetic_const)
         _QT_APP.processEvents()
 
-        # Switch to Analog NTSC mode & render synthetic 525-line raster
+        # Test audio mute toggle
+        initial_muted = dlg._ctrl.is_audio_muted()
+        dlg._on_toggle_audio_clicked()
+        self.assertNotEqual(dlg._ctrl.is_audio_muted(), initial_muted)
+        dlg._on_toggle_audio_clicked()
+        self.assertEqual(dlg._ctrl.is_audio_muted(), initial_muted)
+
+        # Switch to Analog NTSC mode & render synthetic 525-line raster + audio
         telem.mode = "ANALOG_NTSC"
         raster = np.linspace(0, 255, 240 * 320, dtype=np.uint8).reshape(240, 320)
         dlg.canvas.resize(760, 200)
@@ -444,7 +455,7 @@ class TestFullSystemAudit(unittest.TestCase):
         from core import get_runtime_data_dir
         from scripts.doctor_check import provision_gqrx_out_of_box, run_doctor_check
 
-        self.assertEqual(core.__version__, "3.1.0")
+        self.assertEqual(core.__version__, "3.1.1")
         self.assertEqual(core.__release_codename__, "Ultra-Zoom-Spectrum")
 
         # 1. Verify PICTOSIGHT_DATA_DIR override & read-only /opt fallback portability
@@ -461,7 +472,7 @@ class TestFullSystemAudit(unittest.TestCase):
 
         # 2. Verify System Doctor passes all required stack checks
         report = run_doctor_check()
-        self.assertEqual(report["version"], "3.1.0")
+        self.assertEqual(report["version"], "3.1.1")
         self.assertTrue(report["ready"])
         self.assertEqual(report["required_failures"], 0)
 

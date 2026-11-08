@@ -4,7 +4,9 @@ ui/tv_dialog.py - Live Broadcast Television Demodulator & Spectrum Dialog
 Designed for zero-overflow operation on the 5" 800x480 DSI touchscreen while scaling
 cleanly to 1080p+ HDMI monitors. Provides:
   - Live GNU Radio ATSC 1.0 (8VSB) Digital TV Demodulation + mpv/ffplay MPEG-TS video
+  - ATSC 8-Level 8VSB Constellation / Eye Diagram Canvas (levels: ±1, ±3, ±5, ±7)
   - Live Analog NTSC / Fast-Scan ATV 525-line Envelope CRT Raster View
+  - Real-time +4.5 MHz FM Aural Audio Demodulation with 1-tap Live Audio / Mute toggle
   - Real-time 7.2 MHz RF Channel Spectrum + +309.441 kHz 8VSB Pilot Lock Reticle
   - 1-tap Southern Colorado / Penrose TV presets & Wideband VHF/UHF TV Channel Scan
   - 1-tap handoff to Gqrx 8.0 MHz Wideband Pandapter
@@ -12,6 +14,7 @@ cleanly to 1080p+ HDMI monitors. Provides:
 
 from __future__ import annotations
 
+import os
 import threading
 from typing import Any, Callable, Dict, List, Optional
 
@@ -43,17 +46,29 @@ from core.tv_demodulator import (
 
 
 class TVSpectrumAndRasterCanvas(QWidget):
-    """Custom GPU-light QPainter canvas rendering 6 MHz ATSC spectrum + pilot lock & NTSC raster."""
+    """
+    Tactical GPU-light QPainter canvas rendering:
+      - 7.2 MHz ATSC / NTSC RF spectrum with pilot marker & dBFS grid
+      - Digital ATSC 8-Level Eye / Constellation diagram (levels: ±1, ±3, ±5, ±7)
+      - Analog NTSC 525-line CRT video raster frame
+    """
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setMinimumHeight(165)
         self._telem = TVReceiverTelemetry()
         self._raster: Optional[np.ndarray] = None
+        self._constellation: Optional[np.ndarray] = None
 
-    def update_state(self, telem: TVReceiverTelemetry, raster: Optional[np.ndarray] = None) -> None:
+    def update_state(
+        self,
+        telem: TVReceiverTelemetry,
+        raster: Optional[np.ndarray] = None,
+        constellation: Optional[np.ndarray] = None,
+    ) -> None:
         self._telem = telem
         self._raster = raster
+        self._constellation = constellation
         self.update()
 
     def paintEvent(self, _event: Any) -> None:
@@ -62,18 +77,34 @@ class TVSpectrumAndRasterCanvas(QWidget):
         w = float(self.width())
         h = float(self.height())
 
-        # Deep tactical background
+        # Tactical background
         painter.fillRect(QRectF(0, 0, w, h), QColor("#060b14"))
         painter.setPen(QPen(QColor("#1e293b"), 1))
         painter.drawRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0))
 
-        show_raster = self._telem.mode == "ANALOG_NTSC" and self._raster is not None
-        spec_rect = QRectF(8.0, 8.0, (w * 0.54 - 12.0) if show_raster else (w - 16.0), h - 16.0)
+        is_ntsc = self._telem.mode == "ANALOG_NTSC"
+        show_raster = is_ntsc and self._raster is not None
+        show_const = (not is_ntsc) and (
+            self._constellation is not None or len(self._telem.constellation_samples) > 0
+        )
+
+        right_split = show_raster or show_const
+        spec_w = (w * 0.56 - 12.0) if right_split else (w - 16.0)
+        spec_rect = QRectF(8.0, 8.0, spec_w, h - 16.0)
 
         self._draw_spectrum(painter, spec_rect)
-        if show_raster and self._raster is not None:
-            ras_rect = QRectF(w * 0.54 + 4.0, 8.0, w * 0.46 - 12.0, h - 16.0)
-            self._draw_raster(painter, ras_rect, self._raster)
+
+        if right_split:
+            right_rect = QRectF(w * 0.56 + 4.0, 8.0, w * 0.44 - 12.0, h - 16.0)
+            if show_raster and self._raster is not None:
+                self._draw_raster(painter, right_rect, self._raster)
+            elif show_const:
+                samples = (
+                    self._constellation
+                    if self._constellation is not None
+                    else np.array(self._telem.constellation_samples, dtype=np.float32)
+                )
+                self._draw_constellation(painter, right_rect, samples)
 
         painter.end()
 
@@ -195,13 +226,73 @@ class TVSpectrumAndRasterCanvas(QWidget):
         painter.drawText(
             QRectF(rect.x() + 4, rect.y() + 2, rect.width() - 8, 15),
             Qt.AlignmentFlag.AlignLeft,
-            "LIVE NTSC / ATV AM VIDEO RASTER (525-LINE)",
+            "LIVE NTSC / ATV CRT VIDEO (525-LINE)",
+        )
+
+    def _draw_constellation(self, painter: QPainter, rect: QRectF, samples: np.ndarray) -> None:
+        """Renders 8-level ATSC 8VSB soft decision symbol eye / constellation diagram."""
+        painter.setPen(QPen(QColor("#1e293b"), 1))
+        painter.drawRect(rect)
+
+        # Header banner
+        painter.setFont(QFont("DejaVu Sans", 7, QFont.Weight.Bold))
+        painter.setPen(QColor("#10b981") if self._telem.pilot_locked else QColor("#38bdf8"))
+        painter.drawText(
+            QRectF(rect.x() + 4, rect.y() + 2, rect.width() - 8, 14),
+            Qt.AlignmentFlag.AlignLeft,
+            "8VSB CONSTELLATION (8-LEVEL EYE)",
+        )
+
+        inner = rect.adjusted(28, 18, -8, -16)
+        ix0, iy0, iw, ih = inner.x(), inner.y(), inner.width(), inner.height()
+
+        # ATSC 8VSB discrete constellation levels: ±1, ±3, ±5, ±7
+        v_min, v_max = -9.0, +9.0
+
+        def sy(val: float) -> float:
+            c = max(v_min, min(v_max, val))
+            return iy0 + ih - ((c - v_min) / (v_max - v_min)) * ih
+
+        # Draw 8 nominal constellation level horizontal guides
+        font_c = QFont("DejaVu Sans Mono", 6)
+        painter.setFont(font_c)
+        for lvl in (-7, -5, -3, -1, +1, +3, +5, +7):
+            yy = sy(float(lvl))
+            painter.setPen(QPen(QColor("#1e3a8a"), 1, Qt.PenStyle.DotLine))
+            painter.drawLine(QPointF(ix0, yy), QPointF(ix0 + iw, yy))
+            painter.setPen(QColor("#64748b"))
+            painter.drawText(QRectF(rect.x() + 2, yy - 5, 24, 10), Qt.AlignmentFlag.AlignRight, f"{lvl:+d}")
+
+        # Zero center reference
+        y_zero = sy(0.0)
+        painter.setPen(QPen(QColor("#334155"), 1, Qt.PenStyle.DashLine))
+        painter.drawLine(QPointF(ix0, y_zero), QPointF(ix0 + iw, y_zero))
+
+        # Plot soft symbol samples as glowing phosphor points
+        if len(samples) > 0:
+            n_pts = min(128, len(samples))
+            sub = samples[-n_pts:]
+            col_dot = QColor("#34d399") if self._telem.pilot_locked else QColor("#38bdf8")
+            painter.setPen(QPen(col_dot, 2.0))
+            for i, val in enumerate(sub):
+                xx = ix0 + (i / max(1, n_pts - 1)) * iw
+                yy = sy(float(val))
+                painter.drawPoint(QPointF(xx, yy))
+
+        # Bottom legend
+        painter.setFont(font_c)
+        painter.setPen(QColor("#94a3b8"))
+        painter.drawText(
+            QRectF(ix0, iy0 + ih + 1, iw, 12),
+            Qt.AlignmentFlag.AlignCenter,
+            "ATSC 8VSB Symbol Eye Trace",
         )
 
 
 class BroadcastTVReceiverDialog(QDialog):
     """
     Non-crashing, DSI-optimized Broadcast TV Demodulator & Channel Analyzer Dialog.
+    Strictly constrained within <= 798x440 on 5" DSI screens with zero clipping.
     """
 
     scan_completed_sig = pyqtSignal(dict)
@@ -215,7 +306,7 @@ class BroadcastTVReceiverDialog(QDialog):
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("📺 Picto-Sight H8 — Live Broadcast TV Demodulator (ATSC 8VSB & NTSC)")
+        self.setWindowTitle("📺 Picto-Sight H8 — Live Broadcast TV Receiver (ATSC 8VSB & NTSC)")
         self._compact = compact_screen
         self._ctrl = get_tv_controller()
         self._all_channels = get_all_fcc_tv_channels()
@@ -238,7 +329,7 @@ class BroadcastTVReceiverDialog(QDialog):
             }
             QPushButton {
                 background-color: #1e293b; color: #f8fafc; border: 1px solid #334155;
-                border-radius: 5px; padding: 4px 8px; font-size: 11px; font-weight: bold;
+                border-radius: 5px; padding: 3px 7px; font-size: 11px; font-weight: bold;
                 min-height: 26px;
             }
             QPushButton:hover { background-color: #334155; border-color: #38bdf8; }
@@ -247,11 +338,10 @@ class BroadcastTVReceiverDialog(QDialog):
 
         self._build_ui()
         self.scan_completed_sig.connect(self._on_tv_scan_finished)
-
         self._select_frequency(initial_freq_hz)
 
         self._poll_timer = QTimer(self)
-        self._poll_timer.setInterval(300)
+        self._poll_timer.setInterval(280)
         self._poll_timer.timeout.connect(self._poll_telemetry)
         self._poll_timer.start()
 
@@ -260,8 +350,8 @@ class BroadcastTVReceiverDialog(QDialog):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(6, 5, 6, 5)
-        root.setSpacing(4)
+        root.setContentsMargins(6, 4, 6, 4)
+        root.setSpacing(3)
 
         # Row 1: Southern Colorado Quick Presets + Channel & Mode Selectors
         top_row = QHBoxLayout()
@@ -281,7 +371,7 @@ class BroadcastTVReceiverDialog(QDialog):
 
         self.cmb_mode = QComboBox()
         self.cmb_mode.addItem("ATSC 8VSB Digital + Video", "ATSC_8VSB")
-        self.cmb_mode.addItem("Analog NTSC / ATV Raster", "ANALOG_NTSC")
+        self.cmb_mode.addItem("Analog NTSC / ATV + Audio", "ANALOG_NTSC")
         self.cmb_mode.currentIndexChanged.connect(self._on_mode_combo_changed)
         top_row.addWidget(self.cmb_mode, stretch=1)
 
@@ -308,7 +398,7 @@ class BroadcastTVReceiverDialog(QDialog):
 
         root.addLayout(top_row)
 
-        # Row 2: Quick Southern Colorado Tower Buttons (fits comfortably in <760px)
+        # Row 2: Quick Southern Colorado Tower Buttons
         preset_row = QHBoxLayout()
         preset_row.setSpacing(3)
         lbl_p = QLabel("CO Towers:")
@@ -319,7 +409,7 @@ class BroadcastTVReceiverDialog(QDialog):
             btn = QPushButton(f"Ch{p['channel']} {p['call'].split()[0]}")
             btn.setStyleSheet(
                 "QPushButton { background-color: #172554; color: #93c5fd; border: 1px solid #1d4ed8; "
-                "padding: 2px 6px; font-size: 10px; min-height: 22px; }"
+                "padding: 2px 5px; font-size: 10px; min-height: 20px; }"
                 "QPushButton:hover { background-color: #1e40af; color: #ffffff; }"
             )
             hz = int(p["center_hz"])
@@ -329,22 +419,26 @@ class BroadcastTVReceiverDialog(QDialog):
         preset_row.addStretch(1)
         root.addLayout(preset_row)
 
-        # Row 3: Live Graphical Spectrum + Analog NTSC Raster Canvas
+        # Row 3: Live Graphical Spectrum + Constellation / NTSC Raster Canvas
         self.canvas = TVSpectrumAndRasterCanvas(self)
         root.addWidget(self.canvas, stretch=1)
 
         # Row 4: Alphanumeric + Graphical Telemetry Bar
         metrics_frame = QFrame()
         metrics_frame.setStyleSheet(
-            "QFrame { background-color: #0b1324; border: 1px solid #1e293b; border-radius: 5px; }"
+            "QFrame { background-color: #0b1324; border: 1px solid #1e293b; border-radius: 4px; }"
         )
         m_lay = QHBoxLayout(metrics_frame)
-        m_lay.setContentsMargins(6, 3, 6, 3)
-        m_lay.setSpacing(8)
+        m_lay.setContentsMargins(6, 2, 6, 2)
+        m_lay.setSpacing(6)
 
         self.lbl_lock_badge = QLabel("● STANDBY")
         self.lbl_lock_badge.setStyleSheet("color: #94a3b8; font-weight: bold; font-size: 11px;")
         m_lay.addWidget(self.lbl_lock_badge)
+
+        self.lbl_audio_badge = QLabel("🔊 LIVE SOUND")
+        self.lbl_audio_badge.setStyleSheet("color: #34d399; font-weight: bold; font-size: 10px;")
+        m_lay.addWidget(self.lbl_audio_badge)
 
         self.lbl_pilot_stats = QLabel("Pilot: -- dBFS (SNR +0.0 dB)")
         self.lbl_pilot_stats.setStyleSheet("color: #38bdf8; font-family: monospace; font-size: 10px;")
@@ -358,8 +452,8 @@ class BroadcastTVReceiverDialog(QDialog):
         self.bar_snr.setRange(0, 30)
         self.bar_snr.setValue(0)
         self.bar_snr.setFormat("SNR %v dB")
-        self.bar_snr.setFixedWidth(105)
-        self.bar_snr.setFixedHeight(16)
+        self.bar_snr.setFixedWidth(95)
+        self.bar_snr.setFixedHeight(15)
         self.bar_snr.setStyleSheet(
             "QProgressBar { background: #0f172a; border: 1px solid #334155; border-radius: 3px; "
             "text-align: center; color: #f8fafc; font-size: 9px; }"
@@ -369,13 +463,13 @@ class BroadcastTVReceiverDialog(QDialog):
         root.addWidget(metrics_frame)
 
         # Status detail line
-        self.lbl_status = QLabel("Ready — Select a Broadcast TV channel and press [▶ START TV].")
+        self.lbl_status = QLabel("Ready — Select Broadcast TV channel and press [▶ START TV].")
         self.lbl_status.setStyleSheet("color: #cbd5e1; font-size: 10px;")
         root.addWidget(self.lbl_status)
 
         # Row 5: Action Controls
         act_row = QHBoxLayout()
-        act_row.setSpacing(5)
+        act_row.setSpacing(4)
 
         self.btn_start = QPushButton("▶ START TV")
         self.btn_start.setStyleSheet(
@@ -385,10 +479,18 @@ class BroadcastTVReceiverDialog(QDialog):
         self.btn_start.clicked.connect(self._on_start_clicked)
         act_row.addWidget(self.btn_start)
 
-        self.btn_video = QPushButton("🎬 VIDEO PLAYER (mpv)")
-        self.btn_video.setStyleSheet(
+        self.btn_audio = QPushButton("🔊 AUDIO: ON")
+        self.btn_audio.setStyleSheet(
             "QPushButton { background-color: #065f46; color: #ecfdf5; border: 1px solid #10b981; }"
             "QPushButton:hover { background-color: #059669; }"
+        )
+        self.btn_audio.clicked.connect(self._on_toggle_audio_clicked)
+        act_row.addWidget(self.btn_audio)
+
+        self.btn_video = QPushButton("🎬 VIDEO PLAYER (mpv)")
+        self.btn_video.setStyleSheet(
+            "QPushButton { background-color: #1e3a8a; color: #dbeafe; border: 1px solid #3b82f6; }"
+            "QPushButton:hover { background-color: #2563eb; }"
         )
         self.btn_video.clicked.connect(self._on_open_video_clicked)
         act_row.addWidget(self.btn_video)
@@ -432,6 +534,29 @@ class BroadcastTVReceiverDialog(QDialog):
     def _on_mode_combo_changed(self, _idx: int) -> None:
         if self._ctrl.is_running():
             self._on_start_clicked()
+
+    def _on_toggle_audio_clicked(self) -> None:
+        muted = not self._ctrl.is_audio_muted()
+        self._ctrl.set_audio_muted(muted)
+        self._update_audio_button_visuals(not muted)
+
+    def _update_audio_button_visuals(self, enabled: bool) -> None:
+        if enabled:
+            self.btn_audio.setText("🔊 AUDIO: ON")
+            self.btn_audio.setStyleSheet(
+                "QPushButton { background-color: #065f46; color: #ecfdf5; border: 1px solid #10b981; }"
+                "QPushButton:hover { background-color: #059669; }"
+            )
+            self.lbl_audio_badge.setText("🔊 LIVE SOUND")
+            self.lbl_audio_badge.setStyleSheet("color: #34d399; font-weight: bold; font-size: 10px;")
+        else:
+            self.btn_audio.setText("🔇 AUDIO: MUTED")
+            self.btn_audio.setStyleSheet(
+                "QPushButton { background-color: #334155; color: #94a3b8; border: 1px solid #475569; }"
+                "QPushButton:hover { background-color: #475569; }"
+            )
+            self.lbl_audio_badge.setText("🔇 MUTED")
+            self.lbl_audio_badge.setStyleSheet("color: #94a3b8; font-weight: bold; font-size: 10px;")
 
     def _on_start_clicked(self) -> None:
         center_hz = int(self.cmb_channel.currentData() or 539_000_000)
@@ -501,7 +626,10 @@ class BroadcastTVReceiverDialog(QDialog):
     def _poll_telemetry(self) -> None:
         telem = self._ctrl.read_telemetry()
         raster = self._ctrl.read_analog_raster() if telem.mode == "ANALOG_NTSC" else None
-        self.canvas.update_state(telem, raster)
+        constellation = self._ctrl.read_constellation() if telem.mode == "ATSC_8VSB" else None
+        self.canvas.update_state(telem, raster, constellation)
+
+        self._update_audio_button_visuals(telem.audio_enabled)
 
         if not telem.running:
             return

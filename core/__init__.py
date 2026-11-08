@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-__version__ = "3.1.0"
+__version__ = "3.1.1"
 __release_codename__ = "Ultra-Zoom-Spectrum"
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent

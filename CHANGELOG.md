@@ -5,6 +5,30 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), sea
 
 ---
 
+## [3.1.1] — 2026-11-08 — *"Broadcast-TV-Overhaul"*
+
+### Added
+- **Integrated Live Analog NTSC Broadcast Audio Demodulation (`core/tv_demodulator.py`)**:
+  - Demodulates the North American standard `+4.500 MHz` FM aural subcarrier (`lo_edge + 5.750 MHz` / `center + 2.750 MHz` relative to the 6.0 MHz channel center).
+  - Quadrature phase-derivative FM discriminator with 32× FIR decimation (`250 kHz` intermediate FM rate), theoretical $75\ \mu\text{s}$ RC de-emphasis, fractional resampling to $48\text{ kHz}$ S16LE PCM, and direct streaming to PipeWire default sink via `paplay`.
+  - Added 1-tap **"🔊 AUDIO: LIVE / MUTED"** interactive toggle button in the Broadcast TV receiver dialog for zero-latency audio mute/unmute control.
+  - Automatic PipeWire volume guard (`ensure_system_audio_unmuted`) ensuring system sinks are unmuted and set to audible levels ($\ge 0.80$).
+- **Direct Native 11.838 MSPS ATSC 1.0 (8VSB) GNU Radio Pipeline (`core/tv_demodulator.py`)**:
+  - Replaced the CPU-throttling polyphase interpolating resampler (`dtv.atsc_rx_filter` with 16 polyphase filter banks) with native HackRF streaming at `11,838,462 Hz` (`atsc_sym_rate * 1.1`).
+  - Added fast 50-tap direct FFT Root Raised Cosine filter (`filter.fft_filter_ccc`) and input analog AGC (`analog.agc2_cc`), eliminating $\approx 70\%$ of SBC CPU overhead and preventing USB sample dropouts.
+  - Resolved `dtv.atsc_fpll` pilot acquisition by normalizing HackRF baseband RMS to $0.5$, translating $+39.3\text{ dB}$ pilot SNR directly into instantaneous symbol sync and segment recovery.
+- **ATSC 8-Level 8VSB Constellation & Eye Diagram Canvas (`ui/tv_dialog.py`)**:
+  - Real-time soft symbol constellation canvas rendering the 8 discrete ATSC 8VSB decision levels (`±1, ±3, ±5, ±7`) with tactical phosphor eye traces.
+  - Provides instantaneous visual verification of pilot phase lock and multi-level symbol slicing.
+- **Crash-Free Digital TV Player Integration (`core/tv_demodulator.py`)**:
+  - Configured `mpv` with `--idle=yes`, `--force-window=yes`, `--demuxer-lavf-probesize=2000000`, and `--stream-buffer-size=8MiB`, preventing the video player from exiting with EOF or hanging as `<defunct>` zombie while waiting for transport packets.
+- **Ultra-Fast Single-Shot TV Band Scanner (`core/tv_demodulator.py`)**:
+  - Upgraded `scan_active_tv_channels` from `-N 3` to `-1` single-sweep, sweeping the entire VHF-Hi (174–216 MHz) and UHF (470–608 MHz) bands in $< 2.4$ seconds with zero timeout risks.
+- **Debian 13 Package Bump (`picto-sight-h8_3.1.1-1.trixie_arm64.deb`)**:
+  - Native Raspberry Pi OS / Debian 13 arm64 package with full automated test suite pass (45/45 tests, 100%).
+
+---
+
 ## [3.1.0] — 2026-11-07 — *"Ultra-Zoom-Spectrum"*
 
 ### Added

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Picto-Sight H8 v3.1.0 (Ultra-Zoom-Spectrum) — Full-Stack Seamless Installer
+# Picto-Sight H8 v3.1.1 (Broadcast-TV-Overhaul) — Full-Stack Seamless Installer
 # Target OS : Raspberry Pi OS / Debian GNU/Linux 13 (Trixie) & 12 (Bookworm)
 # Hardware  : Raspberry Pi 5 + Hailo-8 (26 TOPS PCIe) + HackRF One + 5" DSI / HDMI
 #
@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-APP_VERSION="3.1.0"
+APP_VERSION="3.1.1"
 GITHUB_REPO_URL="https://github.com/DynoGator/picto-sight-h8.git"
 
 INSTALL_SYSTEM_PKGS=1
@@ -36,7 +36,7 @@ for arg in "$@"; do
         --run-tests)    RUN_TESTS=1 ;;
         -h|--help)
             cat <<'EOF'
-Picto-Sight H8 v3.1.0 Full-Stack Installer (Debian 13 Trixie / Raspberry Pi OS)
+Picto-Sight H8 v3.1.1 Full-Stack Installer (Debian 13 Trixie / Raspberry Pi OS)
 
 Usage:
   ./install.sh [options]
