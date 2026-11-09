@@ -1,3 +1,6 @@
+# Android Handset smali decompiled worktree (full source archived in handset/handset_src.tar.gz)
+handset/src/
+
 # Python & Virtual Environments
 .venv/
 venv/

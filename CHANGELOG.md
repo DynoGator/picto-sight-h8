@@ -5,6 +5,34 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), sea
 
 ---
 
+## [3.2.0] — 2026-11-08 — *"Wasteland-SIGINT"*
+
+### Added
+- **Dual-Node Mobile Remote Architecture (Google Pixel 9 Pro XL & GrapheneOS Handset Node)**:
+  - Packaged and signed release APK: `handset/apk/PictoSight-H8-2.1.0.apk` (`llc.resgen.pictosight`), designed without Google Play Services dependencies for hardened GrapheneOS and AOSP devices.
+  - Sideload deployment script `handset/install_handset.sh` providing automated ADB detection, reverse port forwarding (`tcp:8765`, `tcp:7356`), and instant app launch.
+  - Seamless remote link to Pi 5 node via local Wi-Fi hotspot (`10.67.191.90:8765`) or Tailscale mesh (`100.64.0.1:8765`).
+  - High-resolution tactile mobile remote touch interface with 4-stage sweep telemetry, Hailo-8 NPU status, frequency scrubber, fine stepper (`±1k/10k/100k/1M`), live volume control, and tactical radar rings (`25/50 NM`).
+  - 48 kHz mono UDP demodulation audio streaming direct from Pi node to handset over port `7355`.
+- **DynoGatorLabs Vault-Tec SIGINT Overseer Terminal (`ui/easter_egg_dialog.py`)**:
+  - Hidden RobCo / Pip-Boy green phosphor CRT terminal dialog accessible via keyboard shortcut `Ctrl+Shift+D` or double-clicking the DynoGatorLabs header badge.
+  - Live animated radiation monitor (`0.003 mR/h RAD-SAFE`), ASCII terminal art, and wasteland lore.
+  - 1-Touch Quick Tune buttons to DynoGatorLabs secret frequencies:
+    - `146.520 MHz FM` — DGL Emergency Wasteland Calling Net
+    - `101.300 MHz WFM` — Vault 101 Wasteland Radio
+    - `1240.0 kHz AM` — Conelrad Emergency Broadcast Relay
+- **Wasteland SIGINT Bridge Daemon (`scripts/pi_remote_bridge.py`, `packaging/picto-sight-bridge.service`)**:
+  - Multi-threaded WebSocket and HTTP companion server on `0.0.0.0:8765`.
+  - HTTP routes for direct in-browser APK downloads (`/apk`), hero cover image delivery (`/cover.jpg`), and browser companion cockpit.
+  - Systemd unit `picto-sight-bridge.service` configured for auto-start on boot with crash recovery.
+- **DynoGatorLabs Visual Branding & Cyberpunk Cover Artwork**:
+  - Deployed cyberpunk cover art (`cover.jpg` / `cover.png`) across desktop launchers, GUI header badges, web companion, and documentation.
+  - DynoGatorLabs branded header subtitle, node profiles (`DynoGatorLabs · Pixel 9 Pro XL`), and status bars.
+- **Debian 13 (Trixie) Package Bump (`picto-sight-h8_3.2.0-1.trixie_arm64.deb`)**:
+  - Native Debian package including `picto-sight-bridge.service`, handset sideload tools, and full test suite passing 45/45 tests (100%).
+
+---
+
 ## [3.1.1] — 2026-11-08 — *"Broadcast-TV-Overhaul"*
 
 ### Added

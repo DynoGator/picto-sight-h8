@@ -72,6 +72,16 @@ QLabel#brandTitle {{
     font-size: {"13px" if compact else "16px"};
     letter-spacing: 0.6px;
 }}
+QPushButton#btnCoverBadge {{
+    border: 1px solid #00f0ff;
+    border-radius: 4px;
+    background-color: #070e17;
+    padding: 1px;
+}}
+QPushButton#btnCoverBadge:hover {{
+    border: 1px solid #00ff9d;
+    background-color: #0d1e2e;
+}}
 QLabel#sectionHeader {{
     color: #38bdf8;
     font-weight: 700;

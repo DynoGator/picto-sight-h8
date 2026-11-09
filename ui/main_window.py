@@ -22,7 +22,7 @@ from typing import Dict, List, Optional, Tuple, Any
 
 import numpy as np
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QSize
-from PyQt6.QtGui import QColor, QFont, QGuiApplication, QIcon, QKeyEvent
+from PyQt6.QtGui import QColor, QFont, QGuiApplication, QIcon, QKeyEvent, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -131,11 +131,15 @@ class SmartScannerMainWindow(QMainWindow):
         ("Sensitive (-70 dBFS)", "CUSTOM:-70"),
     ]
 
-    def __init__(self, auto_scan_mode: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        auto_scan_mode: Optional[str] = None,
+        settings_path: Optional[Path] = None,
+    ) -> None:
         super().__init__()
         self._startup_auto_scan = auto_scan_mode.upper().strip() if auto_scan_mode else None
 
-        self.setWindowTitle("Picto-Sight H8 v3.1 • Ultra-Zoom AI RF Scanner • Hailo-8 + HackRF + Gqrx")
+        self.setWindowTitle("Picto-Sight H8 v3.2.0 • DynoGatorLabs Wasteland SIGINT Platform • Hailo-8 + HackRF + Gqrx")
         icon_svg = Path(__file__).resolve().parent.parent / "icons" / "smart-scanner.svg"
         if icon_svg.exists():
             self.setWindowIcon(QIcon(str(icon_svg)))
@@ -169,7 +173,7 @@ class SmartScannerMainWindow(QMainWindow):
         self._signal_filter_mode: str = "ALL"
         self._search_filter_text: str = ""
         self._loading_ui_settings: bool = False
-        self._ui_settings_path: Path = self.organizer.profiles_dir / "ui_settings.json"
+        self._ui_settings_path: Path = Path(settings_path) if settings_path else (self.organizer.profiles_dir / "ui_settings.json")
         self._tv_dialog: Optional[BroadcastTVReceiverDialog] = None
         self._active_gqrx_freq_hz: Optional[int] = None
 
@@ -279,8 +283,25 @@ class SmartScannerMainWindow(QMainWindow):
         hdr_hbox.setContentsMargins(7, 3, 7, 3)
         hdr_hbox.setSpacing(5)
 
-        self.lbl_brand = QLabel("⚡ SMART RF AI", self)
+        cover_path = Path(__file__).resolve().parent.parent / "docs" / "images" / "cover.jpg"
+        if cover_path.exists():
+            self.btn_cover = QPushButton(self)
+            self.btn_cover.setObjectName("btnCoverBadge")
+            pix = QPixmap(str(cover_path)).scaled(
+                46, 26, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+            )
+            self.btn_cover.setIcon(QIcon(pix))
+            self.btn_cover.setIconSize(pix.size())
+            self.btn_cover.setToolTip("⚡ DynoGatorLabs Wasteland Division • Vault-Tec SIGINT Terminal [Ctrl+Shift+D]")
+            self.btn_cover.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.btn_cover.clicked.connect(self._open_dynogator_terminal)
+            hdr_hbox.addWidget(self.btn_cover)
+
+        self.lbl_brand = QLabel("⚡ DYNOGATOR LABS", self)
         self.lbl_brand.setObjectName("brandTitle")
+        self.lbl_brand.setToolTip("DynoGatorLabs Wasteland SIGINT Platform • Double-click or press Ctrl+Shift+D for Vault Terminal")
+        self.lbl_brand.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.lbl_brand.mouseDoubleClickEvent = lambda ev: self._open_dynogator_terminal()
         hdr_hbox.addWidget(self.lbl_brand)
 
         self.pill_sdr = TelemetryMeterPill("SDR", "SDR: READY", "#10b981", self)
@@ -1176,6 +1197,11 @@ class SmartScannerMainWindow(QMainWindow):
         self._apply_viable_filter_and_populate()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if (event.modifiers() == (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
+                and event.key() == Qt.Key.Key_D):
+            self._open_dynogator_terminal()
+            event.accept()
+            return
         if event.key() == Qt.Key.Key_V and not (hasattr(self, "edit_filter_search") and self.edit_filter_search.hasFocus()):
             # Hotkey 'V' toggles between Voice Broadcast only and All signals
             new_mode = "ALL" if self._signal_filter_mode == "VOICE_BROADCAST" else "VOICE_BROADCAST"
@@ -1183,6 +1209,20 @@ class SmartScannerMainWindow(QMainWindow):
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def _open_dynogator_terminal(self) -> None:
+        try:
+            from ui.easter_egg_dialog import DynoGatorEasterEggDialog
+            dlg = DynoGatorEasterEggDialog(self, tune_callback=self._tune_frequency_direct)
+            dlg.exec()
+        except Exception as e:
+            print(f"[DynoGatorLabs Terminal Error]: {e}")
+
+    def _tune_frequency_direct(self, hz: int, mode: str) -> None:
+        try:
+            self.tune_signal(hz, mode)
+        except Exception:
+            pass
 
     @staticmethod
     def _is_tv_or_data_profile(p: ClassifiedSignalProfile) -> bool:

@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Picto-Sight H8 v3.1.1 (Broadcast-TV-Overhaul) — Full-Stack Seamless Installer
+# Picto-Sight H8 v3.2.0 (DynoGatorLabs Wasteland SIGINT Edition)
+# Full-Stack Seamless Installer & Dual-Node Provisioner
 # Target OS : Raspberry Pi OS / Debian GNU/Linux 13 (Trixie) & 12 (Bookworm)
 # Hardware  : Raspberry Pi 5 + Hailo-8 (26 TOPS PCIe) + HackRF One + 5" DSI / HDMI
+# Handset   : Google Pixel 9 Pro XL / Android 15 / GrapheneOS (llc.resgen.pictosight)
 #
 # Supports BOTH:
 #   1. Local clone install:
@@ -14,7 +16,7 @@
 
 set -euo pipefail
 
-APP_VERSION="3.1.1"
+APP_VERSION="3.2.0"
 GITHUB_REPO_URL="https://github.com/DynoGator/picto-sight-h8.git"
 
 INSTALL_SYSTEM_PKGS=1
@@ -22,6 +24,8 @@ INSTALL_UDEV=1
 INSTALL_CLI_LINK=1
 INSTALL_DESKTOP=1
 INSTALL_AUTOSTART=1
+INSTALL_BRIDGE_SERVICE=1
+INSTALL_HANDSET=1
 PROVISION_GQRX=1
 RUN_TESTS=0
 
@@ -32,11 +36,13 @@ for arg in "$@"; do
         --no-cli-link)  INSTALL_CLI_LINK=0 ;;
         --no-desktop)   INSTALL_DESKTOP=0 ;;
         --no-autostart) INSTALL_AUTOSTART=0 ;;
+        --no-bridge)    INSTALL_BRIDGE_SERVICE=0 ;;
+        --no-handset)   INSTALL_HANDSET=0 ;;
         --no-gqrx)      PROVISION_GQRX=0 ;;
         --run-tests)    RUN_TESTS=1 ;;
         -h|--help)
             cat <<'EOF'
-Picto-Sight H8 v3.1.1 Full-Stack Installer (Debian 13 Trixie / Raspberry Pi OS)
+Picto-Sight H8 v3.2.0 DynoGatorLabs Wasteland SIGINT Installer (Debian 13 Trixie / Pi OS)
 
 Usage:
   ./install.sh [options]
@@ -47,6 +53,8 @@ Options:
   --no-cli-link   Skip /usr/local/bin/picto-sight global symlink creation
   --no-desktop    Skip ~/Desktop & application menu .desktop launchers
   --no-autostart  Skip ~/.config/autostart Wayland/labwc boot autostart entry
+  --no-bridge     Skip picto-sight-bridge.service systemd installation
+  --no-handset    Skip ADB mobile remote handset sideload check
   --no-gqrx       Skip out-of-the-box Gqrx 2.17+ profile & bookmark provisioning
   --run-tests     Execute the automated pytest verification suite after installation
   -h, --help      Show this help message
@@ -113,8 +121,20 @@ if [ -f /etc/os-release ]; then
     OS_CODENAME="${VERSION_CODENAME:-unknown}"
 fi
 
+echo -e "\033[0;32m"
+cat << 'EOF'
+  ____  _      _             ____  _       _     _     _   _  ___  
+ |  _ \(_) ___| |_ ___      / ___|(_) __ _| |__ | |_  | | | |( _ ) 
+ | |_) | |/ __| __/ _ \ ____\___ \| |/ _` | '_ \| __| | |_| |/ _ \ 
+ |  __/| | (__| || (_) |_____|__) | | (_| | | | | |_  |  _  | (_) |
+ |_|   |_|\___|\__\___/     |____/|_|\__, |_| |_|\__| |_| |_|\___/ 
+                                     |___/                         
+       [ DynoGatorLabs Wasteland SIGINT Platform v3.2.0 ]
+       [ Hailo-8 AI + HackRF One + Pixel 9 Pro XL Mobile Remote ]
+EOF
+echo -e "\033[0m"
 echo "================================================================================"
-echo "  PICTO-SIGHT H8 v${APP_VERSION} — FULL-STACK INSTALLER"
+echo "  PICTO-SIGHT H8 v${APP_VERSION} — DUAL-NODE FULL-STACK INSTALLER"
 echo "  Detected OS   : ${OS_PRETTY} ($(uname -m), codename: ${OS_CODENAME})"
 echo "  Install Path  : ${REPO_DIR}"
 echo "  Target User   : ${TARGET_USER} (${TARGET_HOME})"
@@ -237,7 +257,11 @@ chmod +x \
     "${REPO_DIR}/autostart_scanner.sh" \
     "${REPO_DIR}/smart_scanner_cli.py" \
     "${REPO_DIR}/scripts/doctor_check.py" \
-    "${REPO_DIR}/scripts/train_hailo_rf_classifier.py"
+    "${REPO_DIR}/scripts/train_hailo_rf_classifier.py" \
+    "${REPO_DIR}/scripts/pi_remote_bridge.py" \
+    "${REPO_DIR}/pi_remote_bridge.py" \
+    "${REPO_DIR}/handset/install_handset.sh" \
+    "${REPO_DIR}/packaging/build_deb.sh"
 
 run_as_target_user mkdir -p "${REPO_DIR}/profiles" "${REPO_DIR}/export" "${REPO_DIR}/logs"
 
@@ -291,7 +315,7 @@ fi
 # ------------------------------------------------------------------------------
 if [ "${INSTALL_AUTOSTART}" -eq 1 ]; then
     echo ""
-    echo "[6/7] Installing Wayland / labwc boot autostart entry..."
+    echo "[6/8] Installing Wayland / labwc boot autostart entry..."
     run_as_target_user mkdir -p "${TARGET_HOME}/.config/autostart"
     sed "s|@INSTALL_DIR@|${REPO_DIR}|g" \
         "${REPO_DIR}/desktop/smart-ai-rf-scanner-autostart.desktop.in" \
@@ -302,14 +326,37 @@ if [ "${INSTALL_AUTOSTART}" -eq 1 ]; then
             "${TARGET_HOME}/.config/autostart/smart-ai-rf-scanner.desktop" || true
     fi
 else
-    echo "[6/7] Skipping boot autostart (--no-autostart)."
+    echo "[6/8] Skipping boot autostart (--no-autostart)."
+fi
+
+# ------------------------------------------------------------------------------
+# Stage 6b: Mobile Remote Bridge Daemon & systemd Service
+# ------------------------------------------------------------------------------
+if [ "${INSTALL_BRIDGE_SERVICE}" -eq 1 ]; then
+    echo ""
+    echo "[6b/8] Installing Picto-Sight Mobile Remote Bridge systemd service..."
+    if [ -f "${REPO_DIR}/packaging/picto-sight-bridge.service" ] && [ -d /etc/systemd/system ]; then
+        ${SUDO} sed -e "s|User=dynogator|User=${TARGET_USER}|g" \
+            -e "s|WorkingDirectory=/home/dynogator/ai-rf-smart-scanner|WorkingDirectory=${REPO_DIR}|g" \
+            -e "s|/home/dynogator/ai-rf-smart-scanner|${REPO_DIR}|g" \
+            "${REPO_DIR}/packaging/picto-sight-bridge.service" \
+            > /etc/systemd/system/picto-sight-bridge.service
+        ${SUDO} chmod 0644 /etc/systemd/system/picto-sight-bridge.service
+        if command -v systemctl >/dev/null 2>&1; then
+            ${SUDO} systemctl daemon-reload || true
+            ${SUDO} systemctl enable --now picto-sight-bridge.service || true
+            echo "       picto-sight-bridge.service installed & active on port 8765."
+        fi
+    fi
+else
+    echo "[6b/8] Skipping bridge systemd service (--no-bridge)."
 fi
 
 # ------------------------------------------------------------------------------
 # Stage 7: Full-Stack System Doctor Verification (& Optional Test Suite)
 # ------------------------------------------------------------------------------
 echo ""
-echo "[7/7] Running Picto-Sight H8 Full-Stack System Doctor..."
+echo "[7/8] Running Picto-Sight H8 Full-Stack System Doctor..."
 run_as_target_user "${REPO_DIR}/launch_scanner.sh" --doctor
 
 if [ "${RUN_TESTS}" -eq 1 ]; then
@@ -317,10 +364,32 @@ if [ "${RUN_TESTS}" -eq 1 ]; then
     run_as_target_user env QT_QPA_PLATFORM=offscreen "${REPO_DIR}/.venv/bin/python" -m pytest "${REPO_DIR}/tests" -v
 fi
 
+# ------------------------------------------------------------------------------
+# Stage 8: Mobile Handset Sideload & Link (Google Pixel 9 Pro XL / Android)
+# ------------------------------------------------------------------------------
+if [ "${INSTALL_HANDSET}" -eq 1 ] && [ -f "${REPO_DIR}/handset/install_handset.sh" ]; then
+    echo ""
+    echo "[8/8] Checking for connected mobile handset (Google Pixel 9 Pro XL / Android)..."
+    chmod +x "${REPO_DIR}/handset/install_handset.sh"
+    if command -v adb >/dev/null 2>&1 && adb devices | grep -q "device$"; then
+        echo "       Connected ADB device detected! Sideloading Picto-Sight v2.1.0 handset..."
+        bash "${REPO_DIR}/handset/install_handset.sh" || true
+    else
+        HOST_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")"
+        echo "       [i] Sideload Android handset anytime with:"
+        echo "           ./handset/install_handset.sh"
+        echo "           or point phone browser to: http://${HOST_IP}:8765/apk"
+    fi
+fi
+
+HOST_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")"
 echo "================================================================================"
-echo "  [✓] PICTO-SIGHT H8 v${APP_VERSION} INSTALLATION COMPLETE!"
-echo "      Launch GUI       : picto-sight --gui   (or tap 'Picto-Sight H8' on Desktop)"
-echo "      Quick RF Scan    : picto-sight --scan --mode quick --min 88 --max 108"
-echo "      Live ATSC TV     : ${REPO_DIR}/.venv/bin/python -m core.tv_demodulator --freq 539000000 --channel 25"
-echo "      System Doctor    : picto-sight --doctor"
+echo "  [✓] PICTO-SIGHT H8 v${APP_VERSION} (DynoGatorLabs Wasteland SIGINT) READY!"
+echo "      Launch Desktop GUI : picto-sight --gui   (or tap Desktop icon)"
+echo "      Mobile Remote App  : http://${HOST_IP}:8765/apk  (or ./handset/install_handset.sh)"
+echo "      Web Companion Live : http://${HOST_IP}:8765"
+echo "      Vault Overseer CRT : Press Ctrl+Shift+D in Desktop GUI"
+echo "      Quick RF Scan      : picto-sight --scan --mode quick --min 88 --max 108"
+echo "      Live ATSC TV       : ${REPO_DIR}/.venv/bin/python -m core.tv_demodulator --freq 539000000 --channel 25"
+echo "      System Doctor      : picto-sight --doctor"
 echo "================================================================================"

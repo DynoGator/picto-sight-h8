@@ -1,0 +1,17 @@
+[Unit]
+Description=Picto-Sight H8 Remote Bridge Daemon (DynoGatorLabs Wasteland SIGINT)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dynogator
+WorkingDirectory=/home/dynogator/ai-rf-smart-scanner
+ExecStart=/usr/bin/python3 /home/dynogator/ai-rf-smart-scanner/scripts/pi_remote_bridge.py --host 0.0.0.0 --port 8765
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

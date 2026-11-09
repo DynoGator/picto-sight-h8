@@ -1,22 +1,75 @@
-# Picto-Sight H8 (`picto-sight-h8`) — v3.1.1 *"Broadcast-TV-Overhaul"*
+# Picto-Sight H8 (`picto-sight-h8`) — v3.2.0 *"DynoGatorLabs Wasteland SIGINT Edition"*
 
-[![Version: 3.1.1](https://img.shields.io/badge/Version-3.1.1%20Broadcast--TV--Overhaul-ff1744.svg)](CHANGELOG.md)
+<p align="center">
+  <img src="docs/images/cover.jpg" alt="Picto-Sight H8 — DynoGatorLabs Wasteland SIGINT Edition" width="760"/>
+</p>
+
+[![Version: 3.2.0](https://img.shields.io/badge/Version-3.2.0%20Wasteland--SIGINT-00e676.svg)](CHANGELOG.md)
+[![Lab: DynoGatorLabs](https://img.shields.io/badge/Lab-DynoGatorLabs-ff9100.svg)](#dynogatorlabs-vault-tec-sigint-overseer-terminal)
 [![OS: Debian 13 Trixie](https://img.shields.io/badge/OS-Debian%2013%20Trixie%20%7C%20RPi%20OS%20ARM64-d70a53.svg)](docs/INSTALL_TRIXIE.md)
 [![NPU: Hailo-8 26 TOPS](https://img.shields.io/badge/NPU-Hailo--8%2026%20TOPS%20(100.0%25%20Acc)-00e676.svg)](#1-4-stage-multi-layer-zoom-refinement--10-class-hailo-8-npu-1000-accuracy)
-[![Resolution: 1024x DSP Zoom](https://img.shields.io/badge/Resolution-1024x%20DSP%20Zoom%20(7.63%20Hz%2Fbin)-7c4dff.svg)](#1-4-stage-multi-layer-zoom-refinement--10-class-hailo-8-npu-1000-accuracy)
+[![Handset: Pixel 9 Pro XL](https://img.shields.io/badge/Handset-Pixel%209%20Pro%20XL%20%7C%20GrapheneOS-7c4dff.svg)](#dual-node-architecture-pi-5-workstation--pixel-9-pro-xl-handset)
 [![SDR: HackRF One](https://img.shields.io/badge/SDR-HackRF%20One%20(1--6000%20MHz)-ffb300.svg)](#2-strict-1-at-a-time-sdr-arbiter--non-root-usb-exorcism-coresdr_arbiterpy)
 [![Receiver: Gqrx 2.17+](https://img.shields.io/badge/Receiver-Gqrx%202.17%2B%20Clickable%20Links-00b0ff.svg)](#3-native-gqrx-217-profile-synthesis--verified-live-tuning-coregqrx_controllerpy)
 [![Demod: ATSC TV | NTSC + Audio | ADS-B | CTCSS](https://img.shields.io/badge/Demod-ATSC%208VSB%20%7C%20NTSC%20%2B%20Audio%20%7C%20ADS--B-00e5ff.svg)](#4-multi-tool-video-radar--telemetry-demodulation-suite)
 [![Tests: 45/45 Passing](https://img.shields.io/badge/Tests-45%2F45%20Passing-brightgreen.svg)](#verification--automated-test-suite)
 [![License: MIT](https://img.shields.io/badge/License-MIT-00e5ff.svg)](LICENSE)
 
-> *"Because manually typing 32-digit hex serials into Gqrx while `readsb` hot-wires your HackRF One in the dark and a 48 MHz crystal harmonic convinces you that you've found a numbers station is not 'signals intelligence'—it's a cry for help."*
+> *"Because when the nuclear sirens wail and the fallout settles, typing 32-digit hex serials into Gqrx while `readsb` hot-wires your HackRF One in the dark is not 'signals intelligence'—it's a cry for help. DynoGatorLabs has you covered."*
 
-**Picto-Sight H8** is a production-ready, hardware-accelerated **AI Smart RF Scanner, 1,024× Ultra-Zoom DSP Spectrum Analyzer (7.63 Hz/bin Welch PSD, 244 Hz/bin micro-waterfall), 10-Class Spectrogram Pictogram Classifier (`100.0%` Hailo-8 PCIe NPU validation accuracy), Live Terrestrial ATSC 8VSB / Analog NTSC Television Receiver with FM Aural Sound Demodulation & 8-Level Constellation, Live 1090 MHz ADS-B Tactical Radar, POCSAG/APRS/IoT Telemetry Decoder, and 1-Click Interactive Gqrx 2.17+ Live Audio Controller** built for **Raspberry Pi 5** running **Raspberry Pi OS / Debian 13 (Trixie)**.
+**Picto-Sight H8** is a production-ready, dual-node **Hardware-Accelerated AI RF Smart Scanner, 1,024× Ultra-Zoom DSP Spectrum Analyzer (7.63 Hz/bin Welch PSD, 244 Hz/bin micro-waterfall), 10-Class Spectrogram Pictogram Classifier (`100.0%` Hailo-8 PCIe NPU validation accuracy), Live Terrestrial ATSC 8VSB / Analog NTSC Television Receiver with FM Aural Sound Demodulation & 8-Level Constellation, Live 1090 MHz ADS-B Tactical Radar, POCSAG/APRS/IoT Telemetry Decoder, and 1-Click Interactive Gqrx 2.17+ Live Audio Controller** engineered for **Raspberry Pi 5** and remotely steered from a **Google Pixel 9 Pro XL** running **GrapheneOS**.
+
+---
+
+## Dual-Node Architecture: Pi 5 Workstation + Pixel 9 Pro XL Handset
+
+```mermaid
+flowchart LR
+    subgraph NODE_PI["Pi 5 SIGINT Base Node (Raspberry Pi 5 + Hailo-8 + HackRF One)"]
+        HACKRF["HackRF One (1-6000 MHz)"] --> ARB["SDR Arbiter (flock)"]
+        HAILO["Hailo-8 AI HAT+ (26 TOPS)"] --> NPU["10-Class Neural Classifier"]
+        ARB --> SCAN["Multi-Layer Scanner Pipeline"]
+        ARB --> GQRX["Gqrx 2.17+ DSP Engine (:7356)"]
+        GQRX --> AUDIO["48 kHz Mono Demod Audio (UDP :7355)"]
+        SCAN --> BRIDGE["picto-sight-bridge.service (:8765)"]
+        BRIDGE --> WEB["Web Companion & APK Sideload (:8765/apk)"]
+    end
+
+    subgraph NODE_HANDSET["Pixel 9 Pro XL Handset Node (GrapheneOS / Android 15)"]
+        APK["PictoSight-H8-2.1.0.apk (llc.resgen.pictosight)\nNo Google Play Services Required"]
+        APK --> UI_MOBILE["Tactile Touch Interface\nRadar Rings • Stages • Presets • Scrubber • Stepper"]
+        APK --> PCM["AudioTrack (UDP :7355 PCM Stream)"]
+    end
+
+    BRIDGE <-->|"WebSocket Telemetry + JSON Commands (:8765)"| APK
+    AUDIO -->|"Direct Demod Audio UDP Stream (:7355)"| PCM
+```
+
+- **Base Node**: Raspberry Pi 5 with Hailo-8 AI HAT+ (26 TOPS PCIe), HackRF One, and optional 5" DSI cyberdeck touchscreen. Runs the heavy RF sweeps, neural inference, and TV decoders.
+- **Handset Node**: Google Pixel 9 Pro XL running GrapheneOS (no Google Play Services required). Connects over local Wi-Fi hotspot (`10.67.191.90:8765`) or Tailscale mesh (`100.64.0.1:8765`), steers sweeps, changes presets, controls volume, and plays live demod audio in real-time.
+- **Wasteland Sideload**: Download the handset APK straight from the Pi's built-in web server at `http://<pi_ip>:8765/apk` or use `./handset/install_handset.sh`.
+
+---
+
+## DynoGatorLabs Vault-Tec SIGINT Overseer Terminal
+
+Hidden inside the desktop GUI is a dedicated **RobCo / Pip-Boy Green Phosphor CRT Terminal**:
+
+- **Keyboard Shortcut**: Press `Ctrl+Shift+D` anywhere in the application window.
+- **Mouse Action**: Double-click the **⚡ DYNOGATOR LABS** header badge or cover art thumbnail.
+- **Features**:
+  - Live animated radiation monitor (`0.003 mR/h RAD-SAFE`).
+  - RobCo Industries Vault-Tec terminal ASCII aesthetics.
+  - **1-Touch Instant Tune**:
+    - `146.520 MHz FM` — DGL Emergency Wasteland Calling Net
+    - `101.300 MHz WFM` — Vault 101 Wasteland Radio
+    - `1240.0 kHz AM` — Conelrad Emergency Broadcast Relay
+
+---
 
 Engineered from the bare metal up for both **5-inch `800×480` DSI touch cyberdecks** and **1080p+ 4-pane HDMI SIGINT workstations**, Picto-Sight H8 defaults to comprehensive multi-pass Full Spectrum sweeps (`1 MHz – 6000 MHz`, $\ge 2$ whole minutes of rigorous multi-pass dwell) and turns raw electromagnetic chaos into an ordered, legally gated, 1-tap clickable cockpit—with zero USB contention, zero `crash=true` Gqrx popups, and zero patience for unmodulated clock spurs.
 
-📚 **Documentation Suite**: [**Debian 13 Trixie Install Guide**](docs/INSTALL_TRIXIE.md) • [**Operator & Cyberdeck Field Manual**](docs/OPERATOR_GUIDE.md) • [**Changelog (`v3.1.1`)**](CHANGELOG.md)
+📚 **Documentation Suite**: [**Debian 13 Trixie Install Guide**](docs/INSTALL_TRIXIE.md) • [**Operator & Cyberdeck Field Manual**](docs/OPERATOR_GUIDE.md) • [**Changelog (`v3.2.0`)**](CHANGELOG.md)
 
 ---
 
@@ -52,15 +105,23 @@ curl -fsSL https://raw.githubusercontent.com/DynoGator/picto-sight-h8/main/insta
 ```
 
 ### Method 2 — Native Debian 13 (Trixie) `.deb` Package (`arm64`)
-Download `picto-sight-h8_3.1.1-1.trixie_arm64.deb` from [**GitHub Releases (`v3.1.1`)**](https://github.com/DynoGator/picto-sight-h8/releases/latest) (or build it locally via `./packaging/build_deb.sh`) and install with `apt`:
+Download `picto-sight-h8_3.2.0-1.trixie_arm64.deb` from [**GitHub Releases (`v3.2.0`)**](https://github.com/DynoGator/picto-sight-h8/releases/latest) (or build it locally via `./packaging/build_deb.sh`) and install with `apt`:
 
 ```bash
 sudo apt update
-sudo apt install -y ./picto-sight-h8_3.1.1-1.trixie_arm64.deb
+sudo apt install -y ./picto-sight-h8_3.2.0-1.trixie_arm64.deb
 picto-sight --doctor
 ```
 
-### Method 3 — Git Clone + Full Installer + Automated 45-Test Verification
+### Method 3 — Mobile Handset Sideload (Google Pixel 9 Pro XL / GrapheneOS)
+Connect your Pixel via USB-C or Wi-Fi Wireless Debugging and run:
+
+```bash
+./handset/install_handset.sh
+```
+Or point the phone's web browser directly to `http://<pi_ip>:8765/apk` for direct wireless sideloading. No Google Play Services or proprietary telemetry required!
+
+### Method 4 — Git Clone + Full Dual-Node Installer + Verification
 ```bash
 git clone https://github.com/DynoGator/picto-sight-h8.git
 cd picto-sight-h8

@@ -14,7 +14,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_DIR}"
 
 PKG_NAME="picto-sight-h8"
-PKG_VERSION="3.1.1"
+PKG_VERSION="3.2.0"
 PKG_RELEASE="1.trixie"
 ARCH="$(dpkg --print-architecture 2>/dev/null || echo "arm64")"
 DEB_FILENAME="${PKG_NAME}_${PKG_VERSION}-${PKG_RELEASE}_${ARCH}.deb"
@@ -27,6 +27,7 @@ BIN_DIR="${STAGE_ROOT}/usr/bin"
 APP_DIR="${STAGE_ROOT}/usr/share/applications"
 ICON_DIR="${STAGE_ROOT}/usr/share/icons/hicolor/scalable/apps"
 UDEV_DIR="${STAGE_ROOT}/etc/udev/rules.d"
+SYSTEMD_DIR="${STAGE_ROOT}/lib/systemd/system"
 DOC_DIR="${STAGE_ROOT}/usr/share/doc/${PKG_NAME}"
 DEBIAN_DIR="${STAGE_ROOT}/DEBIAN"
 
@@ -42,12 +43,14 @@ mkdir -p \
     "${OPT_DIR}/icons" \
     "${OPT_DIR}/desktop" \
     "${OPT_DIR}/docs" \
+    "${OPT_DIR}/handset" \
     "${OPT_DIR}/packaging/udev" \
     "${OPT_DIR}/tests" \
     "${BIN_DIR}" \
     "${APP_DIR}" \
     "${ICON_DIR}" \
     "${UDEV_DIR}" \
+    "${SYSTEMD_DIR}" \
     "${DOC_DIR}" \
     "${DEBIAN_DIR}"
 
@@ -57,6 +60,7 @@ cp -f \
     "${REPO_DIR}/launch_scanner.sh" \
     "${REPO_DIR}/autostart_scanner.sh" \
     "${REPO_DIR}/install.sh" \
+    "${REPO_DIR}/pi_remote_bridge.py" \
     "${REPO_DIR}/pyproject.toml" \
     "${REPO_DIR}/requirements.txt" \
     "${REPO_DIR}/README.md" \
@@ -69,13 +73,24 @@ cp -f "${REPO_DIR}/core/"*.py "${OPT_DIR}/core/"
 cp -f "${REPO_DIR}/ui/"*.py "${OPT_DIR}/ui/"
 cp -f "${REPO_DIR}/scripts/"*.py "${OPT_DIR}/scripts/"
 cp -f "${REPO_DIR}/models/hailo_pictogram_head_weights.npz" "${OPT_DIR}/models/"
-cp -f "${REPO_DIR}/icons/"*.svg "${OPT_DIR}/icons/"
+cp -f "${REPO_DIR}/icons/"* "${OPT_DIR}/icons/"
 cp -f "${REPO_DIR}/desktop/"*.in "${OPT_DIR}/desktop/"
 cp -f "${REPO_DIR}/packaging/udev/53-hackrf-picto-sight.rules" "${OPT_DIR}/packaging/udev/"
 cp -f "${REPO_DIR}/tests/"*.py "${OPT_DIR}/tests/"
-if compgen -G "${REPO_DIR}/docs/*.md" >/dev/null; then
-    cp -f "${REPO_DIR}/docs/"*.md "${OPT_DIR}/docs/"
-    cp -f "${REPO_DIR}/docs/"*.md "${DOC_DIR}/"
+cp -rf "${REPO_DIR}/handset" "${OPT_DIR}/"
+
+if [ -d "${REPO_DIR}/docs" ]; then
+    cp -rf "${REPO_DIR}/docs/"* "${OPT_DIR}/docs/"
+    cp -rf "${REPO_DIR}/docs/"*.md "${DOC_DIR}/" 2>/dev/null || true
+fi
+
+# Mobile Remote Bridge Daemon systemd service
+if [ -f "${REPO_DIR}/packaging/picto-sight-bridge.service" ]; then
+    sed -e "s|/home/dynogator/ai-rf-smart-scanner|/opt/picto-sight-h8|g" \
+        -e "s|User=dynogator|User=root|g" \
+        "${REPO_DIR}/packaging/picto-sight-bridge.service" \
+        > "${SYSTEMD_DIR}/picto-sight-bridge.service"
+    chmod 0644 "${SYSTEMD_DIR}/picto-sight-bridge.service"
 fi
 
 chmod 0755 \
@@ -84,7 +99,10 @@ chmod 0755 \
     "${OPT_DIR}/install.sh" \
     "${OPT_DIR}/smart_scanner_cli.py" \
     "${OPT_DIR}/scripts/doctor_check.py" \
-    "${OPT_DIR}/scripts/train_hailo_rf_classifier.py"
+    "${OPT_DIR}/scripts/train_hailo_rf_classifier.py" \
+    "${OPT_DIR}/scripts/pi_remote_bridge.py" \
+    "${OPT_DIR}/pi_remote_bridge.py" \
+    "${OPT_DIR}/handset/install_handset.sh"
 
 # 2. System CLI entrypoint (/usr/bin/picto-sight)
 cat > "${BIN_DIR}/picto-sight" <<'EOF'
@@ -198,18 +216,27 @@ if [ "$1" = "configure" ]; then
         fi
     fi
 
+    # 5. Enable and start picto-sight-bridge.service for remote mobile/handset companion
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl daemon-reload 2>/dev/null || true
+        systemctl enable --now picto-sight-bridge.service 2>/dev/null || true
+    fi
+
     echo "[✓] picto-sight-h8 configured! Run 'picto-sight --doctor' or launch 'Picto-Sight H8 RF Scanner' from Desktop."
 fi
 
 exit 0
 EOF
 
-# 8. DEBIAN/prerm — Clean up generated .venv & __pycache__ on package removal
+# 8. DEBIAN/prerm — Clean up generated .venv, stop services & __pycache__ on package removal
 cat > "${DEBIAN_DIR}/prerm" <<'EOF'
 #!/usr/bin/env bash
 set -e
 
 if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl disable --now picto-sight-bridge.service 2>/dev/null || true
+    fi
     rm -rf /opt/picto-sight-h8/.venv
     find /opt/picto-sight-h8 -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 fi

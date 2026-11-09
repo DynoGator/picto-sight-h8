@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "picto-sight-h8"
-version = "3.1.1"
-description = "Hailo-8 (26 TOPS) AI-Powered Full-Spectrum Multi-Pass RF Smart Scanner, 1024x Ultra-Zoom 10-Class Spectrogram Classifier, Live ATSC/NTSC TV + 1090 MHz ADS-B Radar & Precision Gqrx SIGINT Studio for Raspberry Pi 5 (Debian 13 Trixie) & HackRF One"
+version = "3.2.0"
+description = "DynoGatorLabs Wasteland SIGINT Platform • Hailo-8 (26 TOPS) Full-Spectrum Multi-Pass RF Smart Scanner, 1024x Ultra-Zoom Classifier, Live TV & ADS-B Radar, Precision Gqrx Studio + Pixel 9 Pro XL Handset Remote for Raspberry Pi 5 & HackRF One"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"

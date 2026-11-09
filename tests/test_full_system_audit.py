@@ -455,8 +455,8 @@ class TestFullSystemAudit(unittest.TestCase):
         from core import get_runtime_data_dir
         from scripts.doctor_check import provision_gqrx_out_of_box, run_doctor_check
 
-        self.assertEqual(core.__version__, "3.1.1")
-        self.assertEqual(core.__release_codename__, "Ultra-Zoom-Spectrum")
+        self.assertEqual(core.__version__, "3.2.0")
+        self.assertEqual(core.__release_codename__, "Wasteland-SIGINT")
 
         # 1. Verify PICTOSIGHT_DATA_DIR override & read-only /opt fallback portability
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -472,7 +472,7 @@ class TestFullSystemAudit(unittest.TestCase):
 
         # 2. Verify System Doctor passes all required stack checks
         report = run_doctor_check()
-        self.assertEqual(report["version"], "3.1.1")
+        self.assertEqual(report["version"], "3.2.0")
         self.assertTrue(report["ready"])
         self.assertEqual(report["required_failures"], 0)
 
@@ -581,8 +581,7 @@ class TestFullSystemAudit(unittest.TestCase):
     def test_10_gui_full_spectrum_and_clickable_links(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             settings_path = Path(tmpdir) / "ui_settings.json"
-            win = SmartScannerMainWindow()
-            win._ui_settings_path = settings_path
+            win = SmartScannerMainWindow(settings_path=settings_path)
 
             # 1. Preset 0 is Full Spectrum (1 - 6000 MHz)
             lbl, lo, hi = win.BAND_PRESETS[0]

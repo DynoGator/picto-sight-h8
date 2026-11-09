@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Publish v3.1.1 release to GitHub and upload Debian 13 package assets.
+Publish v3.2.0 release to GitHub and upload Debian 13 package & Android APK assets.
 """
 import json
 import os
@@ -20,49 +20,62 @@ def main():
         print("ERROR: No GitHub PAT found")
         sys.exit(1)
 
-    body_text = """# Picto-Sight H8 v3.1.1 — "Broadcast-TV-Overhaul"
+    body_text = """# Picto-Sight H8 v3.2.0 — "DynoGatorLabs Wasteland SIGINT Edition"
 
-Picto-Sight H8 v3.1.1 delivers **Complete Broadcast Television Demodulation (ATSC 1.0 8VSB & Analog NTSC)** with **Integrated Real-Time FM Broadcast Audio**, an **8-Level 8VSB Constellation & Eye Diagram Canvas**, **Direct Native 11.838 MSPS GNU Radio DSP**, and **Crash-Free Video Player Integration** on Raspberry Pi 5 / Debian 13 (Trixie).
+<p align="center">
+  <img src="https://raw.githubusercontent.com/DynoGator/picto-sight-h8/main/docs/images/cover.jpg" alt="Picto-Sight H8 — DynoGatorLabs Wasteland SIGINT Edition" width="760"/>
+</p>
 
-### 🌟 What's New in v3.1.1
+Picto-Sight H8 v3.2.0 delivers the full **Dual-Node Mobile Remote SIGINT Platform**, pairing the Raspberry Pi 5 + Hailo-8 AI HAT+ + HackRF One base station with a **Google Pixel 9 Pro XL** handset running **GrapheneOS**, featuring the **Vault-Tec SIGINT Overseer Terminal (`Ctrl+Shift+D`)**, and complete **DynoGatorLabs** wasteland branding.
 
-1. **Integrated Real-Time Analog NTSC FM Audio Demodulation**:
-   - Demodulates the North American standard `+4.500 MHz` FM aural audio carrier (`center + 2.750 MHz` / `lo + 5.750 MHz`).
-   - Quadrature FM discrimination with 32× FIR decimation (`250 kHz` intermediate FM rate), $75\ \mu\text{s}$ RC de-emphasis, fractional resampling to $48\text{ kHz}$ S16LE PCM, and low-latency streaming to PipeWire via `paplay`.
-   - Added a 1-tap **"🔊 AUDIO: LIVE / MUTED"** interactive toggle button in the Broadcast TV receiver dialog.
-   - Built-in PipeWire volume guard unmuting default sinks and setting volume $\ge 0.80$.
+### 🌟 What's New in v3.2.0
 
-2. **Direct Native 11.838 MSPS ATSC 1.0 (8VSB) GNU Radio DSP Pipeline**:
-   - Eliminated the CPU-choking 16-bank polyphase interpolator by streaming HackRF at native `11,838,462 Hz` (`atsc_sym_rate * 1.1`).
-   - Integrated fast 50-tap direct FFT Root Raised Cosine filter (`filter.fft_filter_ccc`) and input analog AGC (`analog.agc2_cc`), saving $\approx 70\%$ CPU on Pi 5 ARM64 cores and preventing USB sample dropouts.
-   - Normalized HackRF IQ baseband RMS to $0.5$, translating $+39.3\text{ dB}$ pilot SNR directly into instantaneous symbol sync and segment recovery.
+1. **Dual-Node Mobile Remote Node (Pixel 9 Pro XL / GrapheneOS)**:
+   - Release APK: `PictoSight-H8-2.1.0.apk` (`llc.resgen.pictosight`), free of Google Play Services dependencies for hardened GrapheneOS and AOSP devices.
+   - 1-Command sideload installer: `./handset/install_handset.sh` with automated ADB detection and reverse port tunnels.
+   - Remote control over Wi-Fi hotspot (`10.67.191.90:8765`) or Tailscale mesh (`100.64.0.1:8765`).
+   - Tactile touch interface with 4-stage sweep telemetry, frequency scrubber, fine stepper (`±1k/10k/100k/1M`), volume controls, and tactical radar rings (`25/50 NM`).
+   - 48 kHz mono UDP demodulation audio streaming direct from Pi node to handset over port `7355`.
 
-3. **ATSC 8-Level 8VSB Constellation & Eye Diagram Canvas**:
-   - Real-time soft symbol constellation canvas rendering the 8 discrete ATSC 8VSB decision levels (`±1, ±3, ±5, ±7`) with tactical phosphor eye traces.
-   - Provides instantaneous visual verification of pilot phase lock and multi-level symbol slicing.
+2. **DynoGatorLabs Vault-Tec SIGINT Overseer Terminal (`Ctrl+Shift+D`)**:
+   - Hidden RobCo / Pip-Boy green phosphor CRT terminal dialog in desktop GUI.
+   - Animated radiation monitor (`0.003 mR/h RAD-SAFE`), ASCII terminal art, and wasteland lore.
+   - 1-Touch Quick Tune buttons for DynoGatorLabs frequencies:
+     - `146.520 MHz FM` — DGL Emergency Wasteland Calling Net
+     - `101.300 MHz WFM` — Vault 101 Wasteland Radio
+     - `1240.0 kHz AM` — Conelrad Emergency Broadcast Relay
 
-4. **Crash-Free Digital Video Player (`mpv`)**:
-   - Configured `mpv` with `--idle=yes`, `--force-window=yes`, and `--stream-buffer-size=8MiB`, ensuring the video player never crashes or exits as defunct while waiting for transport packets.
+3. **Wasteland SIGINT Bridge Daemon (`scripts/pi_remote_bridge.py`)**:
+   - Multi-threaded WebSocket and HTTP companion server on `0.0.0.0:8765`.
+   - Direct in-browser APK downloads (`/apk`), hero cover art delivery (`/cover.jpg`), and companion web GUI.
+   - Systemd unit `picto-sight-bridge.service` enabled for automatic boot autostart.
 
-5. **Ultra-Fast Single-Shot TV Band Scanner**:
-   - Upgraded `scan_active_tv_channels` with one-shot `-1` fast sweeps, completing entire VHF-Hi and UHF band surveys in $< 2.4$ seconds with zero timeout risks.
+4. **Robust Automated Installers**:
+   - Upgraded `install.sh` and `handset/install_handset.sh` with ASCII art headers, bridge service installation, and ADB handset detection.
+   - Automated test suite passes 45/45 tests (100% pass rate).
 
-6. **Native Debian 13 (Trixie) Package**:
-   - `picto-sight-h8_3.1.1-1.trixie_arm64.deb` tested and verified across all 45 automated system tests (100% pass rate).
+### 📦 Installation
 
-### 📦 Installation (Debian 13 Trixie / Raspberry Pi OS ARM64)
+**Debian 13 (Trixie) / Raspberry Pi OS ARM64:**
 ```bash
 sudo apt update
-sudo apt install -y ./picto-sight-h8_3.1.1-1.trixie_arm64.deb
+sudo apt install -y ./picto-sight-h8_3.2.0-1.trixie_arm64.deb
 picto-sight --doctor
 picto-sight --gui
+```
+
+**Mobile Handset Sideload (Pixel 9 Pro XL / Android):**
+```bash
+./handset/install_handset.sh
+# Or download directly from your Pi in browser:
+# http://<pi_ip>:8765/apk
 ```
 """
 
     payload = {
-        'tag_name': 'v3.1.1',
+        'tag_name': 'v3.2.0',
         'target_commitish': 'main',
-        'name': 'Picto-Sight H8 v3.1.1 (Broadcast-TV-Overhaul)',
+        'name': 'Picto-Sight H8 v3.2.0 (DynoGatorLabs Wasteland SIGINT Edition)',
         'body': body_text.strip(),
         'draft': False,
         'prerelease': False
@@ -92,7 +105,7 @@ picto-sight --gui
         print(f"HTTPError {e.code}: {error_body}")
         # If release already exists, fetch it
         req_get = urllib.request.Request(
-            'https://api.github.com/repos/DynoGator/picto-sight-h8/releases/tags/v3.1.1',
+            'https://api.github.com/repos/DynoGator/picto-sight-h8/releases/tags/v3.2.0',
             headers={
                 'Authorization': f'token {pat}',
                 'Accept': 'application/vnd.github.v3+json',
@@ -103,17 +116,24 @@ picto-sight --gui
             release = json.loads(resp.read().decode('utf-8'))
             upload_url_base = release['upload_url'].split('{')[0]
 
-    deb_path = '/home/dynogator/ai-rf-smart-scanner/dist/picto-sight-h8_3.1.1-1.trixie_arm64.deb'
-    sha_path = deb_path + '.sha256'
+    deb_path = '/home/dynogator/ai-rf-smart-scanner/dist/picto-sight-h8_3.2.0-1.trixie_arm64.deb'
+    deb_sha = deb_path + '.sha256'
+    apk_path = '/home/dynogator/ai-rf-smart-scanner/handset/apk/PictoSight-H8-2.1.0.apk'
+    apk_sha = apk_path + '.sha256'
 
-    for asset_file in [deb_path, sha_path]:
+    for asset_file in [deb_path, deb_sha, apk_path, apk_sha]:
         if not os.path.isfile(asset_file):
             print(f"Asset file not found: {asset_file}")
             continue
         name = os.path.basename(asset_file)
         with open(asset_file, 'rb') as f:
             data = f.read()
-        content_type = 'application/vnd.debian.binary-package' if name.endswith('.deb') else 'text/plain'
+        if name.endswith('.deb'):
+            content_type = 'application/vnd.debian.binary-package'
+        elif name.endswith('.apk'):
+            content_type = 'application/vnd.android.package-archive'
+        else:
+            content_type = 'text/plain'
         upload_url = f"{upload_url_base}?name={name}"
         req_up = urllib.request.Request(
             upload_url,

@@ -219,6 +219,7 @@ def main() -> None:
     parser.add_argument("--doctor", action="store_true", help="Run full-stack OS, SDR, Hailo-8, GNU Radio TV, ADS-B & Gqrx dependency verification")
     parser.add_argument("--doctor-json", action="store_true", help="Output full-stack system doctor report as JSON")
     parser.add_argument("--provision-gqrx", action="store_true", help="Provision clean out-of-the-box Gqrx 2.17+ configs & starter bookmarks")
+    parser.add_argument("--bridge", action="store_true", help="Launch DynoGatorLabs Wasteland SIGINT mobile remote bridge daemon (WebSocket/HTTP :8765)")
     parser.add_argument("-v", "--version", action="store_true", help="Print Picto-Sight H8 version and exit")
 
     args = parser.parse_args()
@@ -226,6 +227,11 @@ def main() -> None:
     if args.version:
         from core import __release_codename__, __version__
         print(f"Picto-Sight H8 v{__version__} ({__release_codename__})")
+        return
+
+    if args.bridge:
+        from scripts.pi_remote_bridge import main as bridge_main
+        bridge_main()
         return
 
     if args.provision_gqrx:
