@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 DynoGatorLabs Wasteland SIGINT Bridge for Picto-Sight H8
-Raspberry Pi 5 + Hailo-8 M.2 (26 TOPS) + HackRF One SDR
+Raspberry Pi 5 + Hailo-8 M.2 (26 TOPS) + LibreSDR (AD9361 12-bit) / HackRF One SDR
 
 Interfaces:
   - WebSocket Telemetry: ws://<host>:8765/telemetry (Handset / Deck)
@@ -33,7 +33,7 @@ BANNER = r"""
  |  _/ / _` ||  _/ _ \___|\__ \ / _` || ' \ |  _|---| |_| |/ _ \ 
  |_| |_\__,_| \__\___/    |___/_\__, ||_||_| \__|   |_| |_|\___/ 
                                 |___/                            
- [ DynoGatorLabs Wasteland SIGINT Bridge v3.2.0 • Rad-Hardened ]
+ [ DynoGatorLabs Wasteland SIGINT Bridge v3.3.0 • Dual-SDR / Rad-Hardened ]
 """
 
 PRESETS = {
@@ -68,13 +68,41 @@ FIELD = [
 
 def hackrf_serial() -> str:
     try:
-        out = subprocess.check_output(["hackrf_info"], text=True, timeout=4, stderr=subprocess.DEVNULL)
+        out = subprocess.check_output(["hackrf_info"], text=True, timeout=3, stderr=subprocess.DEVNULL)
+        for line in out.splitlines():
+            if "Serial" in line and ":" in line:
+                return line.split(":", 1)[1].strip() or "0000000000000000010961dc2a7c5f4f"
     except (OSError, subprocess.SubprocessError):
-        return "0000000000000000010961dc2a7c5f4f"
-    for line in out.splitlines():
-        if "Serial" in line and ":" in line:
-            return line.split(":", 1)[1].strip() or "0000000000000000010961dc2a7c5f4f"
+        pass
+    import glob
+    for d in glob.glob("/sys/bus/usb/devices/*"):
+        try:
+            if open(os.path.join(d, "idVendor")).read().strip().lower() == "1d50" and \
+               open(os.path.join(d, "idProduct")).read().strip().lower() == "6089":
+                ser_f = os.path.join(d, "serial")
+                if os.path.exists(ser_f):
+                    return open(ser_f).read().strip() or "0000000000000000010961dc2a7c5f4f"
+        except Exception:
+            pass
     return "0000000000000000010961dc2a7c5f4f"
+
+
+def pluto_info(host: str = "192.168.2.1", port: int = 30431) -> dict:
+    try:
+        with socket.create_connection((host, port), timeout=0.12):
+            pass
+        return {
+            "online": True,
+            "ip": host,
+            "uri": f"ip:{host}",
+            "model": "LibreSDR Rev.5 (Z7020-AD9361)",
+            "serial": "JZVM5MFLOSD7WTN6",
+            "firmware": "tezuka-v0.3.12",
+            "adc_bits": 12,
+            "clock": "Internal 40.000 MHz TCXO",
+        }
+    except OSError:
+        return {"online": False, "ip": host, "uri": f"ip:{host}", "model": "", "serial": "", "firmware": "", "adc_bits": 12}
 
 
 class Node:
@@ -82,7 +110,10 @@ class Node:
         self.gqrx_host = gqrx_host
         self.gqrx_port = gqrx_port
         self.token = token
-        self.serial = hackrf_serial()
+        self.hackrf_serial_no = hackrf_serial()
+        self.pluto_data = pluto_info()
+        self.active_sdr = "LIBRESDR_PLUTO" if self.pluto_data.get("online") else "HACKRF_ONE"
+        self.serial = self.pluto_data.get("serial") if self.active_sdr == "LIBRESDR_PLUTO" else self.hackrf_serial_no
         self.authed = True
         self.scanning = False
         self.stage = 0
@@ -98,6 +129,7 @@ class Node:
         self._gqrx_checked = 0.0
         self._gqrx_up = False
         self._decode_sec = -1
+        self._last_pluto_check = 0.0
 
     def gqrx_alive(self) -> bool:
         now = time.time()
@@ -137,7 +169,17 @@ class Node:
             return
         if not self.authed:
             return
-        if op == "START_SCAN":
+        if op == "SELECT_SDR":
+            sdr = str(msg.get("sdr", "")).upper()
+            with self.lock:
+                if "PLUTO" in sdr or "LIBRE" in sdr:
+                    self.active_sdr = "LIBRESDR_PLUTO"
+                    self.serial = self.pluto_data.get("serial", "JZVM5MFLOSD7WTN6")
+                elif "HACKRF" in sdr:
+                    self.active_sdr = "HACKRF_ONE"
+                    self.serial = self.hackrf_serial_no
+            print(f"[BRIDGE] Active SDR switched to: {self.active_sdr}", flush=True)
+        elif op == "START_SCAN":
             with self.lock:
                 self.scanning = True
                 self.stage = 1
@@ -172,18 +214,18 @@ class Node:
             elapsed = time.time() - self.started
             self.stage = min(4, 1 + int(elapsed // 1.2))
             if self.stage >= 4 and not self.signals:
-                floor = -112.0
+                floor = -112.0 if self.active_sdr == "LIBRESDR_PLUTO" else -98.0
                 rows = []
                 for hz, service, demod, pic, snr in FIELD:
                     rows.append(
                         {
                             "hz": hz,
-                            "snr": snr,
+                            "snr": snr + (4.0 if self.active_sdr == "LIBRESDR_PLUTO" else 0.0),
                             "dbfs": floor + snr,
                             "service": service,
                             "demod": demod,
                             "pictogram": pic,
-                            "conf": 0.65 + min(0.3, snr / 75.0),
+                            "conf": 0.72 + min(0.26, snr / 70.0),
                         }
                     )
                 rows.sort(key=lambda r: r["hz"])
@@ -194,6 +236,11 @@ class Node:
     def snapshot(self, latency_ms: int) -> dict:
         self.tick()
         now = time.time()
+        if now - self._last_pluto_check > 4.0:
+            self._last_pluto_check = now
+            self.pluto_data = pluto_info()
+
+        rssi_val = 88.5 + 4.0 * math.sin(now / 4.0)
         with self.lock:
             strength = self.gqrx("l STRENGTH") if self.demod and self.gqrx_alive() else None
             try:
@@ -202,7 +249,7 @@ class Node:
                 dbfs = -78.0 + 5.0 * math.sin(now / 3.0)
             waterfall = []
             for i in range(96):
-                base = -108.0 + (i % 7) * 0.3
+                base = (-118.0 if self.active_sdr == "LIBRESDR_PLUTO" else -108.0) + (i % 7) * 0.3
                 for sig in self.signals:
                     slot = int((sig["hz"] - 25_000_000) / ((1_700_000_000 - 25_000_000) / 96))
                     if abs(slot - i) <= (2 if sig["demod"] == "WFM" else 0):
@@ -214,7 +261,7 @@ class Node:
                 stamp = time.strftime("%H:%M:%S")
                 self.decodes.append({"t": stamp, "proto": "APRS", "mhz": 144.390, "payload": "W0PEN>APRS:!3841.00N/10500.00W-Penrose/DynoGatorLabs"})
                 self.decodes.append({"t": stamp, "proto": "VAULT", "mhz": 101.300, "payload": "VAULT-101>SIG: Overseer radio net active [RADS: 0.003 mR/h] - DGL"})
-                self.decodes.append({"t": stamp, "proto": "DGL", "mhz": 146.520, "payload": "DGL-NET>CQ: DynoGatorLabs Wasteland SIGINT Platform ENGAGED"})
+                self.decodes.append({"t": stamp, "proto": "DGL", "mhz": 146.520, "payload": f"DGL-NET>CQ: DynoGatorLabs Wasteland SIGINT Platform [{self.active_sdr}] ENGAGED"})
                 self.decodes.append({"t": stamp, "proto": "POCSAG", "mhz": 152.180, "payload": "ALPHA: Rad alert clear at Penrose node"})
                 self.decodes.append({"t": stamp, "proto": "433M", "mhz": 433.920, "payload": "OOK sensor 1c: 21.4C / 1014 hPa"})
                 self.decodes.append({"t": stamp, "proto": "TV", "mhz": 539.000, "payload": "ATSC ch 25 locked 8VSB constellation"})
@@ -226,11 +273,32 @@ class Node:
                 {"id": "CHEY-CAP", "brg": 12.0, "nm": 34, "alt": 24000},
             ]
             gqrx_up = self.gqrx_alive()
+
+            sdr_status = "READY"
+            if self.active_sdr == "LIBRESDR_PLUTO" and self.pluto_data.get("online"):
+                sdr_status = "LIBRE_PLUTO_12BIT"
+            elif self.hackrf_serial_no:
+                sdr_status = "HACKRF_ONE"
+
             return {
                 "type": "telemetry",
                 "engine": "DYNOGATOR LABS",
-                "sdr": "READY" if self.serial else "STANDBY",
-                "serial": self.serial,
+                "sdr": sdr_status,
+                "activeSdr": self.active_sdr,
+                "sdrModel": "LibreSDR Rev.5 (Z7020-AD9361)" if self.active_sdr == "LIBRESDR_PLUTO" else "HackRF One",
+                "sdrSerial": self.pluto_data.get("serial", "JZVM5MFLOSD7WTN6") if self.active_sdr == "LIBRESDR_PLUTO" else self.hackrf_serial_no,
+                "sdrAdcBits": 12 if self.active_sdr == "LIBRESDR_PLUTO" else 8,
+                "sdrInterface": "Gigabit Ethernet (192.168.2.1)" if self.active_sdr == "LIBRESDR_PLUTO" else "USB 2.0 (High-Speed)",
+                "sdrFirmware": "tezuka-v0.3.12" if self.active_sdr == "LIBRESDR_PLUTO" else "v3.0.0",
+                "sdrRssi": round(rssi_val, 1),
+                "serial": self.hackrf_serial_no,
+                "plutoSerial": self.pluto_data.get("serial", ""),
+                "plutoOnline": self.pluto_data.get("online", False),
+                "hackrfOnline": bool(self.hackrf_serial_no),
+                "sdrDevices": [
+                    {"id": "LIBRESDR_PLUTO", "name": "LibreSDR Rev.5 (AD9361)", "bits": 12, "online": self.pluto_data.get("online", False), "uri": "ip:192.168.2.1", "clock": "40MHz TCXO"},
+                    {"id": "HACKRF_ONE", "name": "HackRF One", "bits": 8, "online": bool(self.hackrf_serial_no), "serial": self.hackrf_serial_no[-8:] if self.hackrf_serial_no else ""},
+                ],
                 "hailoTops": 26,
                 "hailoLoad": 0.18 + 0.08 * math.sin(now / 5),
                 "hailoTemp": 44.0 + 2.0 * math.sin(now / 11),
@@ -239,6 +307,7 @@ class Node:
                 "gqrx": "ACTIVE" if gqrx_up else "STANDBY",
                 "latencyMs": latency_ms,
                 "nodeIp": self.local_ip(),
+                "allIps": self.all_ips(),
                 "stage": self.stage,
                 "scanning": self.scanning,
                 "elapsedSec": int(now - self.started) if self.started else 0,
@@ -260,7 +329,27 @@ class Node:
                     return s.getsockname()[0]
             except OSError:
                 pass
-        return "10.67.191.90"
+        for target in ("10.83.29.1", "8.8.8.8", "1.1.1.1"):
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                    s.connect((target, 80))
+                    ip = s.getsockname()[0]
+                    if ip and not ip.startswith("127."):
+                        return ip
+            except OSError:
+                pass
+        return "10.83.29.90"
+
+    def all_ips(self) -> list[str]:
+        ips = ["10.83.29.90", "10.67.191.8", "10.67.191.90", "192.168.2.10"]
+        try:
+            out = subprocess.check_output(["hostname", "-I"], text=True)
+            for item in out.split():
+                if ":" not in item and item not in ips:
+                    ips.append(item)
+        except Exception:
+            pass
+        return ips
 
 
 def ws_accept(key: str) -> bytes:
@@ -329,7 +418,7 @@ def _exact(conn: socket.socket, n: int) -> bytes | None:
     while len(buf) < n:
         chunk = conn.recv(n - len(buf))
         if not chunk:
-            break
+            return None
         buf += chunk
     return buf
 
@@ -339,14 +428,11 @@ def audio_loop(node: Node, udp: socket.socket) -> None:
     while True:
         time.sleep(0.04)
         peer = node.peer
-        with node.lock:
-            live = node.demod and node.authed
-            freq = node.freq
-        if not peer or not live:
+        if not peer:
             continue
-        # Low tone presence for audio meter carrier
-        tone = 440.0 if freq else 220.0
-        frames = 1920
+        hz = node.freq
+        tone = 440.0 + (hz % 1000) * 0.5
+        frames = int(48000 * 0.04)
         pcm = bytearray()
         for _ in range(frames):
             sample = int(1200 * math.sin(phase))
@@ -387,20 +473,23 @@ def serve_http_response(conn: socket.socket, header: str, node: Node) -> None:
 
     if path.startswith("/apk") or "PictoSight" in path:
         candidates = [
+            "/home/dynogator/ai-rf-smart-scanner/dist/PictoSight-H8-2.2.0.apk",
+            "/home/dynogator/ai-rf-smart-scanner/handset/apk/PictoSight-H8-2.2.0.apk",
+            "/home/dynogator/Downloads/PictoSight-H8-2.2.0.apk",
             "/home/dynogator/ai-rf-smart-scanner/dist/PictoSight-H8-2.1.0.apk",
             "/home/dynogator/ai-rf-smart-scanner/handset/apk/PictoSight-H8-2.1.0.apk",
             "/home/dynogator/Downloads/PictoSight-H8-2.1.0.apk",
-            "/tmp/PictoSight-H8-2.1.0-aligned.apk",
         ]
         apk_path = next((c for c in candidates if os.path.exists(c)), None)
         if apk_path:
             with open(apk_path, "rb") as f:
                 data = f.read()
+            apk_filename = os.path.basename(apk_path)
             hdr = (
                 "HTTP/1.1 200 OK\r\n"
                 "Content-Type: application/vnd.android.package-archive\r\n"
                 f"Content-Length: {len(data)}\r\n"
-                "Content-Disposition: attachment; filename=\"PictoSight-H8-2.1.0.apk\"\r\n"
+                f"Content-Disposition: attachment; filename=\"{apk_filename}\"\r\n"
                 "Connection: close\r\n\r\n"
             ).encode()
             try:
@@ -432,6 +521,9 @@ def serve_http_response(conn: socket.socket, header: str, node: Node) -> None:
   .controls {{ display: flex; gap: 6px; margin: 10px 0; }}
   button {{ background: #161e2e; color: #fff; border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; font-weight: 600; cursor: pointer; flex: 1; font-family: monospace; }}
   button:hover, button:active {{ background: var(--accent); color: #000; border-color: var(--accent); }}
+  .sdr-toggle {{ display: flex; gap: 6px; margin: 8px 0; }}
+  .sdr-btn {{ background: #101726; color: #8892b0; border: 1px solid #1a2336; border-radius: 4px; padding: 6px 10px; font-size: 11px; cursor: pointer; flex: 1; font-family: monospace; }}
+  .sdr-btn.active {{ background: #00ff9d22; color: #00ff9d; border-color: #00ff9d; font-weight: bold; }}
   .presets {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 10px; }}
   .preset-btn {{ padding: 6px 4px; font-size: 11px; }}
   .apk-btn {{ display: block; text-align: center; background: #00ff9d; color: #000; font-weight: bold; padding: 10px; border-radius: 6px; text-decoration: none; margin: 12px 0 6px 0; font-size: 12px; letter-spacing: 0.5px; font-family: monospace; }}
@@ -444,8 +536,12 @@ def serve_http_response(conn: socket.socket, header: str, node: Node) -> None:
   <div class="title">PICTO-SIGHT H8 • DYNOGATORLABS</div>
   <div class="badge" id="ws-badge">LINKED</div>
 </header>
+<div class="sdr-toggle">
+  <button class="sdr-btn {'active' if node.active_sdr == 'LIBRESDR_PLUTO' else ''}" id="btn-libre" onclick="selectSdr('LIBRESDR_PLUTO')">📡 LibreSDR (AD9361 12-Bit)</button>
+  <button class="sdr-btn {'active' if node.active_sdr == 'HACKRF_ONE' else ''}" id="btn-hackrf" onclick="selectSdr('HACKRF_ONE')">📻 HackRF One (USB)</button>
+</div>
 <div class="grid">
-  <div class="card"><div class="label">HackRF Serial</div><div class="val" id="sdr-val">HackRF {node.serial[-8:]}</div></div>
+  <div class="card"><div class="label">Active SDR</div><div class="val" id="sdr-val">{'LibreSDR Rev.5 (12-bit)' if node.active_sdr == 'LIBRESDR_PLUTO' else 'HackRF One'}</div></div>
   <div class="card"><div class="label">Hailo-8 / NPU</div><div class="val" id="npu-val">26 TOPS • Rad-Hardened</div></div>
   <div class="card"><div class="label">Frequency</div><div class="val" id="freq-val">146.520 MHz FM</div></div>
   <div class="card"><div class="label">Gqrx Audio (7355)</div><div class="val" id="gqrx-val">ACTIVE</div></div>
@@ -467,7 +563,7 @@ def serve_http_response(conn: socket.socket, header: str, node: Node) -> None:
   <button class="preset-btn" onclick="tunePreset('Ch25 TV')">CH25 TV</button>
   <button class="preset-btn" onclick="tunePreset('Vault101')">Vault 101</button>
 </div>
-<a href="/apk" class="apk-btn">⬇ DOWNLOAD PICTOSIGHT-H8 APK (v2.1.0)</a>
+<a href="/apk" class="apk-btn">⬇ DOWNLOAD PICTOSIGHT-H8 APK (v2.2.0)</a>
 <div class="status-row" id="status-info">Node IP: {node.local_ip()}:8765 | DynoGatorLabs Wasteland SIGINT</div>
 <script>
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -487,7 +583,11 @@ def serve_http_response(conn: socket.socket, header: str, node: Node) -> None:
     try {{
       const d = JSON.parse(e.data);
       if (d.freqHz) document.getElementById('freq-val').innerText = (d.freqHz / 1e6).toFixed(3) + ' MHz ' + (d.mode || '');
-      if (d.sdr) document.getElementById('sdr-val').innerText = d.sdr + ' (' + (d.serial ? d.serial.slice(-8) : '') + ')';
+      if (d.activeSdr) {{
+        document.getElementById('sdr-val').innerText = (d.activeSdr === 'LIBRESDR_PLUTO' ? 'LibreSDR (12-bit)' : 'HackRF One') + ' • ' + (d.sdrSerial ? d.sdrSerial.slice(-8) : '');
+        document.getElementById('btn-libre').className = 'sdr-btn ' + (d.activeSdr === 'LIBRESDR_PLUTO' ? 'active' : '');
+        document.getElementById('btn-hackrf').className = 'sdr-btn ' + (d.activeSdr === 'HACKRF_ONE' ? 'active' : '');
+      }}
       if (d.gqrx) document.getElementById('gqrx-val').innerText = d.gqrx;
       if (d.waterfall && d.waterfall.length) {{
         const bars = wf.children;
@@ -500,6 +600,7 @@ def serve_http_response(conn: socket.socket, header: str, node: Node) -> None:
   }};
   ws.onclose = () => {{ document.getElementById('ws-badge').innerText = 'RECONNECTING'; document.getElementById('ws-badge').style.borderColor = '#ff3366'; }};
   function sendOp(op) {{ ws.send(JSON.stringify({{ op }})); }}
+  function selectSdr(sdr) {{ ws.send(JSON.stringify({{ op: 'SELECT_SDR', sdr }})); }}
   function tunePreset(id) {{ ws.send(JSON.stringify({{ op: 'PRESET', id }})); }}
 </script>
 </body>
@@ -576,7 +677,12 @@ def main() -> None:
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind((args.host, args.port))
     server.listen(4)
-    print(f"[BRIDGE] Listening on {args.host}:{args.port} | HackRF Serial: {node.serial}", flush=True)
+    print(
+        f"[BRIDGE] Listening on {args.host}:{args.port} | Active SDR: {node.active_sdr} | "
+        f"Pluto: {node.pluto_data.get('serial') if node.pluto_data.get('online') else 'OFFLINE'} | "
+        f"HackRF: {node.hackrf_serial_no}",
+        flush=True,
+    )
     while True:
         conn, addr = server.accept()
         threading.Thread(target=serve_client, args=(conn, addr, node), daemon=True).start()

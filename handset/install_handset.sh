@@ -12,11 +12,17 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APK_PATH="${SCRIPT_DIR}/apk/PictoSight-H8-2.1.0.apk"
+APK_PATH="${SCRIPT_DIR}/apk/PictoSight-H8-2.2.0.apk"
 
 if [[ ! -f "${APK_PATH}" ]]; then
     # Fallback to repo dist or downloads
-    if [[ -f "${SCRIPT_DIR}/../dist/PictoSight-H8-2.1.0.apk" ]]; then
+    if [[ -f "${SCRIPT_DIR}/../dist/PictoSight-H8-2.2.0.apk" ]]; then
+        APK_PATH="${SCRIPT_DIR}/../dist/PictoSight-H8-2.2.0.apk"
+    elif [[ -f "${HOME}/Downloads/PictoSight-H8-2.2.0.apk" ]]; then
+        APK_PATH="${HOME}/Downloads/PictoSight-H8-2.2.0.apk"
+    elif [[ -f "${SCRIPT_DIR}/apk/PictoSight-H8-2.1.0.apk" ]]; then
+        APK_PATH="${SCRIPT_DIR}/apk/PictoSight-H8-2.1.0.apk"
+    elif [[ -f "${SCRIPT_DIR}/../dist/PictoSight-H8-2.1.0.apk" ]]; then
         APK_PATH="${SCRIPT_DIR}/../dist/PictoSight-H8-2.1.0.apk"
     elif [[ -f "${HOME}/Downloads/PictoSight-H8-2.1.0.apk" ]]; then
         APK_PATH="${HOME}/Downloads/PictoSight-H8-2.1.0.apk"

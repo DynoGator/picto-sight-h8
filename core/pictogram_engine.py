@@ -665,6 +665,7 @@ class AIPictogramClassifierManager:
             iq_mod=iq_mod,
             obw_hz=obw_hz,
             snr_db=snr_db,
+            fsk_shift_hz=float(iq_metrics.get("fsk_shift_hz", 0.0) or 0.0),
         )
         # Multi-pass high-confidence dwell boost when consistent across passes
         if dwell_passes > 1 and not is_noise:
@@ -730,6 +731,7 @@ class AIPictogramClassifierManager:
         iq_mod: str,
         obw_hz: float,
         snr_db: float,
+        fsk_shift_hz: float = 0.0,
     ) -> Tuple[str, str, float]:
         """
         Produces an accurate, human-readable + AI-grounded classification combining
@@ -831,8 +833,9 @@ class AIPictogramClassifierManager:
             or (454_000_000 <= center_freq_hz <= 454_680_000)
             or (929_000_000 <= center_freq_hz <= 932_000_000)
         )
+        fsk_shift = float(fsk_shift_hz or 0.0)
         if is_dedicated_pager and (
-            iq_mod == "DIGITAL_BURST" or eff_class in ("fsk_pager", "tone_matrix", "raster", "ism_telemetry")
+            iq_mod == "DIGITAL_BURST" or eff_class in ("fsk_pager", "tone_matrix", "raster", "ism_telemetry") or fsk_shift >= 1200.0
         ):
             return "PAGER_DATA", f"Pager-POCSAG ({eff_class})", eff_conf
         if eff_class == "fsk_pager" and iq_mod == "DIGITAL_BURST" and (

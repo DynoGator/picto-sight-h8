@@ -4,20 +4,20 @@
   <img src="docs/images/cover.jpg" alt="Picto-Sight H8 — DynoGatorLabs Wasteland SIGINT Edition" width="760"/>
 </p>
 
-[![Version: 3.2.0](https://img.shields.io/badge/Version-3.2.0%20Wasteland--SIGINT-00e676.svg)](CHANGELOG.md)
+[![Version: 3.3.0](https://img.shields.io/badge/Version-3.3.0%20Libre--Pluto--Dual--SDR-00e676.svg)](CHANGELOG.md)
 [![Lab: DynoGatorLabs](https://img.shields.io/badge/Lab-DynoGatorLabs-ff9100.svg)](#dynogatorlabs-vault-tec-sigint-overseer-terminal)
 [![OS: Debian 13 Trixie](https://img.shields.io/badge/OS-Debian%2013%20Trixie%20%7C%20RPi%20OS%20ARM64-d70a53.svg)](docs/INSTALL_TRIXIE.md)
 [![NPU: Hailo-8 26 TOPS](https://img.shields.io/badge/NPU-Hailo--8%2026%20TOPS%20(100.0%25%20Acc)-00e676.svg)](#1-4-stage-multi-layer-zoom-refinement--10-class-hailo-8-npu-1000-accuracy)
 [![Handset: Pixel 9 Pro XL](https://img.shields.io/badge/Handset-Pixel%209%20Pro%20XL%20%7C%20GrapheneOS-7c4dff.svg)](#dual-node-architecture-pi-5-workstation--pixel-9-pro-xl-handset)
-[![SDR: HackRF One](https://img.shields.io/badge/SDR-HackRF%20One%20(1--6000%20MHz)-ffb300.svg)](#2-strict-1-at-a-time-sdr-arbiter--non-root-usb-exorcism-coresdr_arbiterpy)
+[![SDR: Dual LibreSDR Pluto & HackRF](https://img.shields.io/badge/SDR-LibreSDR%2012--Bit%20%7C%20HackRF%20One-ffb300.svg)](#2-strict-1-at-a-time-sdr-arbiter--non-root-usb-exorcism-coresdr_arbiterpy)
 [![Receiver: Gqrx 2.17+](https://img.shields.io/badge/Receiver-Gqrx%202.17%2B%20Clickable%20Links-00b0ff.svg)](#3-native-gqrx-217-profile-synthesis--verified-live-tuning-coregqrx_controllerpy)
 [![Demod: ATSC TV | NTSC + Audio | ADS-B | CTCSS](https://img.shields.io/badge/Demod-ATSC%208VSB%20%7C%20NTSC%20%2B%20Audio%20%7C%20ADS--B-00e5ff.svg)](#4-multi-tool-video-radar--telemetry-demodulation-suite)
-[![Tests: 45/45 Passing](https://img.shields.io/badge/Tests-45%2F45%20Passing-brightgreen.svg)](#verification--automated-test-suite)
+[![Tests: 52/52 Passing](https://img.shields.io/badge/Tests-52%2F52%20Passing-brightgreen.svg)](#verification--automated-test-suite)
 [![License: MIT](https://img.shields.io/badge/License-MIT-00e5ff.svg)](LICENSE)
 
 > *"Because when the nuclear sirens wail and the fallout settles, typing 32-digit hex serials into Gqrx while `readsb` hot-wires your HackRF One in the dark is not 'signals intelligence'—it's a cry for help. DynoGatorLabs has you covered."*
 
-**Picto-Sight H8** is a production-ready, dual-node **Hardware-Accelerated AI RF Smart Scanner, 1,024× Ultra-Zoom DSP Spectrum Analyzer (7.63 Hz/bin Welch PSD, 244 Hz/bin micro-waterfall), 10-Class Spectrogram Pictogram Classifier (`100.0%` Hailo-8 PCIe NPU validation accuracy), Live Terrestrial ATSC 8VSB / Analog NTSC Television Receiver with FM Aural Sound Demodulation & 8-Level Constellation, Live 1090 MHz ADS-B Tactical Radar, POCSAG/APRS/IoT Telemetry Decoder, and 1-Click Interactive Gqrx 2.17+ Live Audio Controller** engineered for **Raspberry Pi 5** and remotely steered from a **Google Pixel 9 Pro XL** running **GrapheneOS**.
+**Picto-Sight H8** is a production-ready, dual-node **Hardware-Accelerated AI RF Smart Scanner, 1,024× Ultra-Zoom DSP Spectrum Analyzer (7.63 Hz/bin Welch PSD, 244 Hz/bin micro-waterfall), 10-Class Spectrogram Pictogram Classifier (`100.0%` Hailo-8 PCIe NPU validation accuracy), Live Terrestrial ATSC 8VSB / Analog NTSC Television Receiver with FM Aural Sound Demodulation & 8-Level Constellation, Live 1090 MHz ADS-B Tactical Radar, POCSAG/APRS/IoT Telemetry Decoder, Dual-SDR Engine Supporting LibreSDR HamGeek AD9363 rev.5 (12-bit ADC, >70 dB dynamic range) & HackRF One (1-6000 MHz), and 1-Click Interactive Gqrx 2.17+ Live Audio Controller** engineered for **Raspberry Pi 5** and remotely steered from a **Google Pixel 9 Pro XL** running **GrapheneOS**.
 
 ---
 
@@ -25,8 +25,9 @@
 
 ```mermaid
 flowchart LR
-    subgraph NODE_PI["Pi 5 SIGINT Base Node (Raspberry Pi 5 + Hailo-8 + HackRF One)"]
-        HACKRF["HackRF One (1-6000 MHz)"] --> ARB["SDR Arbiter (flock)"]
+    subgraph NODE_PI["Pi 5 SIGINT Base Node (Raspberry Pi 5 + Hailo-8 + Dual SDRs)"]
+        LIBRE["LibreSDR Rev.5 (12-bit AD9361)"] --> ARB["SDR Arbiter (flock)"]
+        HACKRF["HackRF One (1-6000 MHz)"] --> ARB
         HAILO["Hailo-8 AI HAT+ (26 TOPS)"] --> NPU["10-Class Neural Classifier"]
         ARB --> SCAN["Multi-Layer Scanner Pipeline"]
         ARB --> GQRX["Gqrx 2.17+ DSP Engine (:7356)"]
@@ -36,8 +37,8 @@ flowchart LR
     end
 
     subgraph NODE_HANDSET["Pixel 9 Pro XL Handset Node (GrapheneOS / Android 15)"]
-        APK["PictoSight-H8-2.1.0.apk (llc.resgen.pictosight)\nNo Google Play Services Required"]
-        APK --> UI_MOBILE["Tactile Touch Interface\nRadar Rings • Stages • Presets • Scrubber • Stepper"]
+        APK["PictoSight-H8-2.2.0.apk (llc.resgen.pictosight)\nNo Google Play Services Required"]
+        APK --> UI_MOBILE["Tactile Touch Interface\nSDR Toggle • Radar Rings • Stages • Presets • Scrubber • Stepper"]
         APK --> PCM["AudioTrack (UDP :7355 PCM Stream)"]
     end
 
@@ -45,8 +46,8 @@ flowchart LR
     AUDIO -->|"Direct Demod Audio UDP Stream (:7355)"| PCM
 ```
 
-- **Base Node**: Raspberry Pi 5 with Hailo-8 AI HAT+ (26 TOPS PCIe), HackRF One, and optional 5" DSI cyberdeck touchscreen. Runs the heavy RF sweeps, neural inference, and TV decoders.
-- **Handset Node**: Google Pixel 9 Pro XL running GrapheneOS (no Google Play Services required). Connects over local Wi-Fi hotspot (`10.67.191.90:8765`) or Tailscale mesh (`100.64.0.1:8765`), steers sweeps, changes presets, controls volume, and plays live demod audio in real-time.
+- **Base Node**: Raspberry Pi 5 with Hailo-8 AI HAT+ (26 TOPS PCIe), dual SDR support for LibreSDR Pluto (12-bit AD9361 via Ethernet `192.168.2.1` or USB) and HackRF One (USB), and optional 5" DSI cyberdeck touchscreen. Runs heavy RF sweeps, neural inference, and TV decoders.
+- **Handset Node**: Google Pixel 9 Pro XL running GrapheneOS (no Google Play Services required). Connects over local Wi-Fi / hotspot (`10.67.191.8:8765`, `10.83.29.90:8765`, `10.67.191.90:8765`) or Tailscale mesh (`100.64.0.1:8765`), selects active SDR, steers sweeps, changes presets, controls volume, and plays live demod audio in real-time.
 - **Wasteland Sideload**: Download the handset APK straight from the Pi's built-in web server at `http://<pi_ip>:8765/apk` or use `./handset/install_handset.sh`.
 
 ---

@@ -5,6 +5,33 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), sea
 
 ---
 
+## [3.3.0] — 2026-11-10 — *"Libre-Pluto-Dual-SDR"*
+
+### Added
+- **LibreSDR HamGeek AD9363 rev.5 / PlutoSDR+ (Tezuka Custom Firmware on SD Card) Native Engine (`core/pluto_engine.py`)**:
+  - Full support for the Analog Devices AD9361 RFIC (46.875 MHz – 6.000 GHz, 2.083 – 61.44 MSPS, 0.0 – 73.0 dB gain).
+  - High dynamic range 12-bit ADC architecture (>70 dB dynamic range) capturing true complex CS16 IQ buffers over Gigabit Ethernet via `libiio` (port `30431`) and USB gadget.
+  - Live hardware logarithmic RSSI readouts directly from AD9361 internal power detectors via IIO attributes.
+  - Multi-pass wideband frequency hopping survey and Layer 3 1.000 MHz STFT spectrogram generation (64x128 dBFS) tailored for Hailo-8 26 TOPS AI neural inference.
+  - Fixed onboard reference clock configuration in Tezuka firmware to lock on the 40.000 MHz internal TCXO (`refclk_source=internal`).
+- **Automatic Hardware Autodetection & Multi-SDR Resource Arbitration (`core/sdr_arbiter.py`)**:
+  - Auto-probes Ethernet (`192.168.2.1:30431`) and Linux sysfs USB endpoints for PlutoSDR (`0456:b673` / `0456:b674`).
+  - Seamless zero-collision SDR switching between LibreSDR Pluto (12-bit) and HackRF One (8-bit).
+  - Native SoapySDR integration: built and packaged `libPlutoSDRSupport.so` (`soapy=0,driver=plutosdr,uri=ip:192.168.2.1`).
+  - Updated Gqrx profile automation with crash sanitization, adaptive sample rates (3.072 MSPS for Pluto, 2.0/2.4/8.0 MSPS for HackRF), and PipeWire/PulseAudio sink routing.
+- **Mobile Remote Handset APK v2.2.0 (`handset/apk/PictoSight-H8-2.2.0.apk`)**:
+  - Upgraded handset remote deck to support multi-IP auto-discovery (`10.83.29.90`, `10.67.191.8`, `10.67.191.90`, `192.168.2.10`).
+  - Added live active SDR switching controls and calibrated hardware RSSI readouts in the handset UI.
+  - Rebuilt with modern AAPT2 compiler, zip-aligned, and signed with v3 Android APK signatures for zero-warning installation on GrapheneOS / Pixel 9 Pro XL.
+- **Multi-Subnet Network Aliasing on Pi 5**:
+  - Added persistent IP alias `10.67.191.8/24` to `wlan0` to ensure flawless incoming handset connections from `10.83.29.165` to `10.67.191.8:8765`.
+  - Configured NetworkManager static route on `eth0` (`192.168.2.10/24`) for ultra-low latency (<0.3 ms) Ethernet connection to LibreSDR `192.168.2.1`.
+- **Test Suite Expansion**:
+  - Created `tests/test_pluto_engine.py` with 7 dedicated unit and hardware integration tests.
+  - Full system audit and regression test suite passing 52/52 tests (100%).
+
+---
+
 ## [3.2.0] — 2026-11-08 — *"Wasteland-SIGINT"*
 
 ### Added

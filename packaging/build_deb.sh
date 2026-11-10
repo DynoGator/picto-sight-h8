@@ -29,6 +29,7 @@ ICON_DIR="${STAGE_ROOT}/usr/share/icons/hicolor/scalable/apps"
 UDEV_DIR="${STAGE_ROOT}/etc/udev/rules.d"
 SYSTEMD_DIR="${STAGE_ROOT}/lib/systemd/system"
 DOC_DIR="${STAGE_ROOT}/usr/share/doc/${PKG_NAME}"
+SOAPY_MOD_DIR="${STAGE_ROOT}/usr/lib/aarch64-linux-gnu/SoapySDR/modules0.8"
 DEBIAN_DIR="${STAGE_ROOT}/DEBIAN"
 
 echo "================================================================================"
@@ -52,6 +53,7 @@ mkdir -p \
     "${UDEV_DIR}" \
     "${SYSTEMD_DIR}" \
     "${DOC_DIR}" \
+    "${SOAPY_MOD_DIR}" \
     "${DEBIAN_DIR}"
 
 # 1. Copy clean application tree (no .venv, no __pycache__, no private GPS profiles)
@@ -82,6 +84,11 @@ cp -rf "${REPO_DIR}/handset" "${OPT_DIR}/"
 if [ -d "${REPO_DIR}/docs" ]; then
     cp -rf "${REPO_DIR}/docs/"* "${OPT_DIR}/docs/"
     cp -rf "${REPO_DIR}/docs/"*.md "${DOC_DIR}/" 2>/dev/null || true
+fi
+
+if [ -f "${REPO_DIR}/packaging/libPlutoSDRSupport.so" ]; then
+    cp -f "${REPO_DIR}/packaging/libPlutoSDRSupport.so" "${SOAPY_MOD_DIR}/libPlutoSDRSupport.so"
+    chmod 0644 "${SOAPY_MOD_DIR}/libPlutoSDRSupport.so"
 fi
 
 # Mobile Remote Bridge Daemon systemd service
@@ -151,15 +158,15 @@ Architecture: ${ARCH}
 Installed-Size: ${INSTALLED_KB}
 Maintainer: DynoGator <https://github.com/DynoGator/picto-sight-h8>
 Homepage: https://github.com/DynoGator/picto-sight-h8
-Depends: python3 (>= 3.11), python3-venv, python3-numpy, python3-opencv, python3-pyqt6, python3-pyqt6.qtsvg, python3-serial, hackrf, libhackrf0, gqrx-sdr, gnuradio, gr-osmosdr, soapysdr0.8-module-hackrf | soapysdr-module-hackrf, rtl-433, readsb, multimon-ng, mpv, gpsd, gpsd-clients, pulseaudio-utils, usbutils
+Depends: python3 (>= 3.11), python3-venv, python3-numpy, python3-opencv, python3-pyqt6, python3-pyqt6.qtsvg, python3-serial, hackrf, libhackrf0, gqrx-sdr, gnuradio, gr-osmosdr, soapysdr0.8-module-hackrf | soapysdr-module-hackrf, libiio0 | libiio2 | libiio-dev, rtl-433, readsb, multimon-ng, mpv, gpsd, gpsd-clients, pulseaudio-utils, usbutils
 Recommends: hailo-all, hailo-models, python3-hailort, direwolf, w-scan-cpp, ffmpeg, sox, minimodem, lxterminal, grim, python3-pytest
 Description: Hailo-8 AI-Powered RF Smart Scanner, ATSC TV, ADS-B Radar & Gqrx Studio
  Picto-Sight H8 is a multi-layer RF spectrum intelligence, 10-class Hailo-8
  (26 TOPS PCIe) spectrogram classifier, live terrestrial ATSC 8VSB / Analog
  NTSC television receiver, 1090 MHz ADS-B Mode-S tactical radar, POCSAG/APRS/ISM
  telemetry decoder, and automated Gqrx 2.17+ controller engineered for
- Raspberry Pi 5 (Debian 13 Trixie), HackRF One, 5-inch DSI touchscreens,
- and 1080p+ HDMI SIGINT workstations.
+ Raspberry Pi 5 (Debian 13 Trixie), HackRF One & LibreSDR PlutoSDR+ (12-bit ADC),
+ 5-inch DSI touchscreens, and 1080p+ HDMI SIGINT workstations.
 EOF
 
 # 7. DEBIAN/postinst — Builds --system-site-packages venv, de-conflicts readsb, provisions Gqrx

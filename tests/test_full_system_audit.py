@@ -125,7 +125,7 @@ class TestFullSystemAudit(unittest.TestCase):
             # 6. Dedicated POCSAG Pager @ 152.480 MHz -> PAGER_DATA
             pgr_frames, pgr_ref = _synth_3_frames("fsk_pager", rng)
             res_pgr = mgr.analyze_spectrogram_frames(
-                152_480_000, pgr_frames, iq_metrics={"ref_floor_dbfs": pgr_ref, "measured_obw_hz": 16_000.0}
+                152_480_000, pgr_frames, iq_metrics={"ref_floor_dbfs": pgr_ref, "measured_obw_hz": 16_000.0, "fsk_shift_hz": 4500.0}
             )
             self.assertEqual(res_pgr.category, "PAGER_DATA")
         finally:

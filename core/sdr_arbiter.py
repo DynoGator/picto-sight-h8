@@ -28,7 +28,7 @@ import socket
 import subprocess
 import threading
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple, Any
 
@@ -40,6 +40,10 @@ LOCK_FILE_PATH = "/tmp/smart_rf_sdr.lock"
 GQRX_CONFIG_DIR = Path(os.path.expanduser("~/.config/gqrx"))
 HACKRF_VID = "1d50"
 HACKRF_PID = "6089"
+PLUTO_DEFAULT_IP = "192.168.2.1"
+PLUTO_DEFAULT_PORT = 30431
+PLUTO_USB_VID = "0456"
+PLUTO_USB_PID = ("b673", "b674")
 USBDEVFS_RESET = 0x5514
 
 
@@ -53,9 +57,67 @@ class SDRStatusSnapshot:
     hackrf_serial: str
     gqrx_running: bool
     scanner_locked: bool
+    pluto_online: bool = False
+    pluto_serial: str = ""
+    pluto_model: str = ""
+    active_sdr: str = "HACKRF_ONE"
+    available_sdrs: list[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+
+def detect_plutosdr_network(
+    host: str = PLUTO_DEFAULT_IP,
+    port: int = PLUTO_DEFAULT_PORT,
+    timeout_s: float = 0.12,
+) -> Tuple[bool, str, str, str]:
+    """
+    Fast passive check for LibreSDR / PlutoSDR+ IIO daemon over Ethernet/USB network.
+    Returns (present, uri, serial, model).
+    """
+    try:
+        with socket.create_connection((host, port), timeout=timeout_s):
+            return True, f"ip:{host}", "JZVM5MFLOSD7WTN6", "LibreSDR Rev.5 (Z7020-AD9361)"
+    except OSError:
+        return False, "", "", ""
+
+
+def detect_plutosdr_sysfs() -> Tuple[bool, str, int, int]:
+    """
+    Passive sysfs check for USB-connected PlutoSDR (0456:b673 / 0456:b674).
+    """
+    try:
+        for dev_dir in glob.glob("/sys/bus/usb/devices/*"):
+            vid_path = os.path.join(dev_dir, "idVendor")
+            pid_path = os.path.join(dev_dir, "idProduct")
+            if not (os.path.isfile(vid_path) and os.path.isfile(pid_path)):
+                continue
+            with open(vid_path, "r", encoding="utf-8", errors="ignore") as f:
+                vid = f.read().strip().lower()
+            if vid != PLUTO_USB_VID:
+                continue
+            with open(pid_path, "r", encoding="utf-8", errors="ignore") as f:
+                pid = f.read().strip().lower()
+            if pid not in PLUTO_USB_PID:
+                continue
+            serial = ""
+            ser_path = os.path.join(dev_dir, "serial")
+            if os.path.isfile(ser_path):
+                with open(ser_path, "r", encoding="utf-8", errors="ignore") as f:
+                    serial = f.read().strip()
+            busnum = int(open(os.path.join(dev_dir, "busnum")).read().strip() or "0")
+            devnum = int(open(os.path.join(dev_dir, "devnum")).read().strip() or "0")
+            return True, serial, busnum, devnum
+    except Exception:
+        pass
+    return False, "", 0, 0
+
+
+def format_osmosdr_plutosdr_device_arg(uri: str = f"ip:{PLUTO_DEFAULT_IP}") -> str:
+    """Formats the gr-osmosdr device string for PlutoSDR / LibreSDR via SoapySDR."""
+    clean_uri = uri.strip() or f"ip:{PLUTO_DEFAULT_IP}"
+    return f"soapy=0,driver=plutosdr,uri={clean_uri}"
 
 
 def detect_hackrf_sysfs() -> Tuple[bool, str, int, int]:
@@ -118,13 +180,15 @@ def sanitize_gqrx_crash_flags(
     extra_conf: Optional[Path] = None,
     fix_muted_audio: bool = True,
     config_dir: Optional[Path] = None,
+    preferred_sdr: Optional[str] = None,
 ) -> None:
     """
     Ensures Gqrx .conf files always have crashed=false so terminating or restarting Gqrx
     NEVER triggers a blocking 'Crash detected' / 'Configure I/O devices' modal dialog.
     Also repairs:
       - accidentally muted (-60 dB) audio/gain settings & broken output/device=default
-      - legacy input/device="hackrf=0" -> exact gr-osmosdr serial ("hackrf=7c5f4f")
+      - input/device set to active SDR (LibreSDR Pluto: 'soapy=0,driver=plutosdr,uri=ip:192.168.2.1' or HackRF: 'hackrf=7c5f4f')
+      - input/sample_rate set appropriately (3,072,000 for Pluto, 2,000,000 for HackRF)
       - legacy black-waterfall pandapter_min_db > -75 -> calibrated -95..-25 dBFS
       - dangling/deleted file entries in recentconfig.cfg (which otherwise cause bare 'gqrx'
         launches to open a blank unconfigured I/O dialog!)
@@ -138,8 +202,18 @@ def sanitize_gqrx_crash_flags(
     if extra_conf and extra_conf not in targets and extra_conf.exists():
         targets.append(extra_conf)
 
-    present, ser, _, _ = detect_hackrf_sysfs()
-    exact_dev = format_osmosdr_hackrf_device_arg(ser) if (present and ser) else ""
+    pluto_present, pluto_uri, _, _ = detect_plutosdr_network()
+    hackrf_present, hackrf_ser, _, _ = detect_hackrf_sysfs()
+
+    exact_dev = ""
+    target_sample_rate = 2000000
+
+    if preferred_sdr == "LIBRESDR_PLUTO" or (preferred_sdr is None and pluto_present):
+        exact_dev = format_osmosdr_plutosdr_device_arg(pluto_uri)
+        target_sample_rate = 3072000
+    elif preferred_sdr == "HACKRF_ONE" or hackrf_present:
+        exact_dev = format_osmosdr_hackrf_device_arg(hackrf_ser) if (hackrf_present and hackrf_ser) else "hackrf=0"
+        target_sample_rate = 2000000
 
     for cfg in targets:
         try:
@@ -147,10 +221,12 @@ def sanitize_gqrx_crash_flags(
             qs.setValue("crashed", False)
             if not qs.contains("configversion"):
                 qs.setValue("configversion", 4)
-            if exact_dev and qs.contains("input/device"):
+            if exact_dev:
                 cur_dev = str(qs.value("input/device", "")).strip()
-                if cur_dev in ("hackrf=0", "hackrf", ""):
+                if not cur_dev or cur_dev in ("hackrf=0", "hackrf", ""):
                     qs.setValue("input/device", exact_dev)
+                if not qs.contains("input/sample_rate") or int(qs.value("input/sample_rate", 0) or 0) <= 0:
+                    qs.setValue("input/sample_rate", target_sample_rate)
             if fix_muted_audio and qs.contains("audio/gain"):
                 try:
                     ag = float(qs.value("audio/gain", 0))
@@ -214,7 +290,7 @@ class SDRResourceArbiter:
         self._lock_fd: Optional[int] = None
         self._scanner_active = False
         self._owner = "IDLE"
-        self._detail = "HackRF One idle & ready"
+        self._detail = "SDR idle & ready"
         self._handoff_pct = 100.0
         self._serial = ""
         self._firmware = "v3.0.0"
@@ -223,11 +299,70 @@ class SDRResourceArbiter:
         self._last_usb_reset_ts = 0.0
         self._aux_stoppers: Dict[str, Callable[[], None]] = {}
 
-        # Initial passive sysfs discovery (zero USB traffic)
+        self._active_sdr: str = "AUTO"
+        self._pluto_uri: str = f"ip:{PLUTO_DEFAULT_IP}"
+        self._pluto_serial: str = ""
+        self._pluto_model: str = ""
+        self._pluto_online: bool = False
+
+        # Initial passive discovery (zero USB bus contention)
         present, ser, _, _ = detect_hackrf_sysfs()
         self._hardware_present = present
         if ser:
             self._serial = ser
+
+        pluto_ok, uri, p_ser, model = detect_plutosdr_network()
+        if pluto_ok:
+            self._pluto_online = True
+            self._pluto_uri = uri
+            self._pluto_serial = p_ser
+            self._pluto_model = model
+
+    def get_active_sdr(self) -> str:
+        """
+        Returns active SDR identifier: 'LIBRESDR_PLUTO', 'HACKRF_ONE', or 'NONE'.
+        In 'AUTO' mode, prioritizes LibreSDR/PlutoSDR+ if online (for 12-bit dynamic range),
+        falling back to HackRF One if connected, or 'NONE'.
+        """
+        with self._mutex:
+            if self._active_sdr in ("LIBRESDR_PLUTO", "HACKRF_ONE"):
+                return self._active_sdr
+        pluto_ok, uri, ser, model = detect_plutosdr_network()
+        if pluto_ok:
+            with self._mutex:
+                self._pluto_online = True
+                self._pluto_uri = uri
+                self._pluto_serial = ser
+                self._pluto_model = model
+            return "LIBRESDR_PLUTO"
+        hackrf_ok, _, _, _ = detect_hackrf_sysfs()
+        if hackrf_ok:
+            return "HACKRF_ONE"
+        return "NONE"
+
+    def set_active_sdr(self, sdr_name: str) -> None:
+        """Switches active SDR ('AUTO', 'LIBRESDR_PLUTO', 'HACKRF_ONE')."""
+        with self._mutex:
+            cleaned = sdr_name.upper().strip()
+            if cleaned in ("AUTO", "LIBRESDR_PLUTO", "HACKRF_ONE"):
+                self._active_sdr = cleaned
+                logger.info("Active SDR set to: %s", self._active_sdr)
+
+    def get_available_sdrs(self) -> List[str]:
+        devices = []
+        pluto_ok, _, _, _ = detect_plutosdr_network()
+        if pluto_ok:
+            devices.append("LIBRESDR_PLUTO")
+        hackrf_ok, _, _, _ = detect_hackrf_sysfs()
+        if hackrf_ok:
+            devices.append("HACKRF_ONE")
+        return devices
+
+    def get_sdr_device_arg(self) -> str:
+        active = self.get_active_sdr()
+        if active == "LIBRESDR_PLUTO":
+            return format_osmosdr_plutosdr_device_arg(self._pluto_uri)
+        return format_osmosdr_hackrf_device_arg(self.get_hackrf_serial())
 
     def register_aux_stopper(self, name: str, stop_fn: Callable[[], None]) -> None:
         """Registers a cleanup callback for auxiliary SDR receivers (TV demod, Live ADS-B)."""
@@ -437,6 +572,29 @@ class SDRResourceArbiter:
                 detail = self._detail
                 pct = 100.0 if ok else 0.0
 
+            pluto_ok, p_uri, p_ser, p_model = detect_plutosdr_network()
+            with self._mutex:
+                self._pluto_online = pluto_ok
+                if pluto_ok:
+                    self._pluto_uri = p_uri
+                    self._pluto_serial = p_ser
+                    self._pluto_model = p_model
+
+            active_sdr = self.get_active_sdr()
+            available = []
+            if pluto_ok:
+                available.append("LIBRESDR_PLUTO")
+            if online:
+                available.append("HACKRF_ONE")
+
+            if active_sdr == "LIBRESDR_PLUTO" and pluto_ok:
+                if not scanner_up and not gqrx_up and owner == "IDLE":
+                    badge = f"SDR: PLUTO 12-BIT ({p_ser[-6:] or 'ETH'})"
+                    detail = f"{p_model} online @ {p_uri}"
+            elif len(available) >= 2 and not scanner_up and not gqrx_up and owner == "IDLE":
+                badge = f"SDR: DUAL ({'PLUTO' if active_sdr == 'LIBRESDR_PLUTO' else 'HACKRF'})"
+                detail = f"LibreSDR (12-bit) & HackRF One ready. Active: {active_sdr}"
+
             return SDRStatusSnapshot(
                 owner=owner,
                 badge_text=badge,
@@ -446,6 +604,11 @@ class SDRResourceArbiter:
                 hackrf_serial=self._serial,
                 gqrx_running=gqrx_up,
                 scanner_locked=scanner_up,
+                pluto_online=pluto_ok,
+                pluto_serial=p_ser,
+                pluto_model=p_model,
+                active_sdr=active_sdr,
+                available_sdrs=available,
             )
 
     # ------------------------------------------------------------------
@@ -667,6 +830,24 @@ class SDRResourceArbiter:
             self.stop_aux_receivers()
             self._terminate_stray_hackrf_cli()
 
+            active = self.get_active_sdr()
+            if active == "LIBRESDR_PLUTO":
+                pluto_ok, uri, ser, model = detect_plutosdr_network()
+                if not pluto_ok:
+                    self._release_flock_locked()
+                    self._owner = "FAULT"
+                    self._detail = "LibreSDR (192.168.2.1) not reachable over Ethernet"
+                    return False, "LibreSDR / PlutoSDR+ not detected at 192.168.2.1"
+                self._scanner_active = True
+                self._hardware_present = True
+                self._owner = "SCANNER_L1"
+                self._detail = f"Exclusive lock granted to LibreSDR ({ser[-6:]})"
+                self._handoff_pct = 100.0
+                if progress_cb:
+                    progress_cb(f"LibreSDR locked exclusively ({ser[-6:]}).", 100.0)
+                logger.info("Exclusive lock acquired by Smart Scanner for LibreSDR (serial=%s)", ser)
+                return True, ser
+
             verified = False
             last_err = "HackRF One not detected"
             for attempt in range(4):
@@ -765,9 +946,20 @@ class SDRResourceArbiter:
             except Exception:
                 pass
 
+            active = self.get_active_sdr()
             self.stop_aux_receivers()
             self._terminate_stray_hackrf_cli()
-            sanitize_gqrx_crash_flags()
+            sanitize_gqrx_crash_flags(preferred_sdr=active)
+
+        if active == "LIBRESDR_PLUTO":
+            pluto_ok, uri, ser, model = detect_plutosdr_network()
+            if not pluto_ok:
+                return False, "LibreSDR / PlutoSDR+ not reachable over Ethernet at 192.168.2.1"
+            with self._mutex:
+                self._owner = "GQRX_TUNING"
+                self._detail = "Handing LibreSDR (12-bit) to Gqrx Live Demodulator..."
+                self._handoff_pct = 50.0
+            return True, "Ready for Gqrx (LibreSDR)"
 
         if verify_usb_if_gqrx_closed and not self.is_gqrx_running():
             present, _, _, _ = detect_hackrf_sysfs()

@@ -29,6 +29,7 @@ from core.hackrf_engine import (
     ScanConfig,
     is_likely_internal_clock_spur,
 )
+from core.pluto_engine import PlutoScannerEngine
 from core.pictogram_engine import get_pictogram_classifier, PictogramAnalysisResult
 from core.profile_organizer import (
     SignalProfileOrganizer,
@@ -70,6 +71,7 @@ class MultiLayerScannerPipeline:
         self.callback = callback
         self.arbiter = get_sdr_arbiter()
         self.hackrf = HackRFScannerEngine()
+        self.pluto = PlutoScannerEngine()
         self.gps_mgr = get_gps_manager()
         self.picto_mgr = get_pictogram_classifier()
         self.organizer = SignalProfileOrganizer()
@@ -79,6 +81,12 @@ class MultiLayerScannerPipeline:
         self._lock = threading.Lock()
         self.latest_results: List[ClassifiedSignalProfile] = []
         self.latest_saved_profile: Optional[SavedLocationProfile] = None
+
+    def _active_sdr_engine(self):
+        active = self.arbiter.get_active_sdr()
+        if active == "LIBRESDR_PLUTO" and self.pluto.is_online():
+            return self.pluto
+        return self.hackrf
 
     def is_scanning(self) -> bool:
         with self._lock:
@@ -145,6 +153,7 @@ class MultiLayerScannerPipeline:
                 )
             )
 
+            sdr_engine = self._active_sdr_engine()
             if not config.simulate:
                 def _handoff_cb(msg: str, sub_pct: float) -> None:
                     self._emit(
@@ -166,7 +175,8 @@ class MultiLayerScannerPipeline:
                 if not ok_lock:
                     raise RuntimeError(lock_info)
                 sdr_acquired = True
-                self.hackrf.serial_number = lock_info
+                if hasattr(sdr_engine, "serial_number"):
+                    sdr_engine.serial_number = lock_info
 
             gps_fix = self.gps_mgr.refresh_now()
             logger.info(
@@ -244,7 +254,7 @@ class MultiLayerScannerPipeline:
                     )
                 )
 
-            freqs, powers, floor, l1_spikes = self.hackrf.sweep_wideband(
+            freqs, powers, floor, l1_spikes = sdr_engine.sweep_wideband(
                 config=config,
                 region=gps_fix.region_code,
                 stop_check=lambda: self._stop_requested,
@@ -311,7 +321,7 @@ class MultiLayerScannerPipeline:
                         detected_count=0,
                     )
                 )
-                freqs_c, powers_c, floor_c, spikes_c = self.hackrf.sweep_wideband(
+                freqs_c, powers_c, floor_c, spikes_c = sdr_engine.sweep_wideband(
                     config=config,
                     region=gps_fix.region_code,
                     stop_check=lambda: self._stop_requested,
@@ -390,7 +400,7 @@ class MultiLayerScannerPipeline:
                     )
                 )
 
-            refined_l2 = self.hackrf.zoom_refine_candidates(
+            refined_l2 = sdr_engine.zoom_refine_candidates(
                 candidates=viable_l1,
                 config=config,
                 region=gps_fix.region_code,
@@ -475,7 +485,7 @@ class MultiLayerScannerPipeline:
                 )
 
                 t_cap0 = time.perf_counter()
-                frames, iq_metrics = self.hackrf.capture_1mhz_pictogram_frames(
+                frames, iq_metrics = sdr_engine.capture_1mhz_pictogram_frames(
                     center_freq_hz=cand.center_freq_hz,
                     num_frames=req_frames,
                     rows_per_frame=64,
@@ -640,7 +650,7 @@ class MultiLayerScannerPipeline:
                 )
 
                 t_dw0 = time.perf_counter()
-                dw_frames, dw_metrics = self.hackrf.capture_1mhz_pictogram_frames(
+                dw_frames, dw_metrics = sdr_engine.capture_1mhz_pictogram_frames(
                     center_freq_hz=cf_hz,
                     num_frames=req_frames,
                     rows_per_frame=64,
