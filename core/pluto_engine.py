@@ -181,6 +181,14 @@ class PlutoScannerEngine:
             clamped = max(2_083_333, min(61_440_000, int(rate_hz)))
             self._rx_v0.attrs["sampling_frequency"].value = str(clamped)
 
+    def set_rx_rf_bandwidth(self, bw_hz: int) -> None:
+        with self._lock:
+            if not self._connected and not self.connect():
+                raise RuntimeError("LibreSDR not connected")
+            if "rf_bandwidth" in self._rx_v0.attrs:
+                clamped = max(200_000, min(56_000_000, int(bw_hz)))
+                self._rx_v0.attrs["rf_bandwidth"].value = str(clamped)
+
     def set_rx_gain(self, gain_db: float, mode: str = "manual") -> None:
         with self._lock:
             if not self._connected and not self.connect():
@@ -241,14 +249,20 @@ class PlutoScannerEngine:
         simulate: bool = False,
         stop_check: Optional[Callable[[], bool]] = None,
         capture_duration_s: Optional[float] = None,
+        gain_mode: str = "manual",
+        hardware_gain_db: Optional[float] = None,
     ) -> Tuple[List[np.ndarray], Dict[str, Any]]:
         """
-        Layer 3 Acquisition Engine using LibreSDR 12-bit ADC:
-          1. Connects to AD9361 via libiio over Gigabit Ethernet.
-          2. Sets LO with +250 kHz offset to eliminate 0 Hz DC center artifact.
-          3. Captures true 12-bit complex IQ at 3.072 MSPS (>70 dB dynamic range!).
-          4. Computes 1024-pt Hann STFT waterfall frames pooled to 64x128 dBFS.
-          5. Computes 262,144-pt Welch precision PSD and CTCSS/pilot metrics.
+        Layer 3 Acquisition Engine using LibreSDR 12-bit ADC & AD9361 RFIC:
+          1. Connects to AD9361 via libiio over Gigabit Ethernet (46.875 MHz - 6.000 GHz).
+          2. Standardizes native acquisition at 4.000 MSPS with 3.0 MHz analog baseband filter.
+          3. Dynamically steers LO offset (+625 kHz / -625 kHz) across tunable limits:
+             - LO DC spike placed 125 kHz outside the 1.000 MHz passband.
+             - Lower limit (46.875 MHz) and upper limit (6.000 GHz) boundary protected.
+          4. Computes 2048-pt Hann STFT waterfall frames with exact integer 4:1 bin pooling
+             (512 bins -> 128 cols, 1953.125 Hz/bin, zero fractional interpolation smearing).
+          5. Multi-rate FIR decimation feeds 262,144-pt Welch PSD, 19.000 kHz MPX pilot,
+             67.0-254.1 Hz CTCSS subaudible PL tone, and 64x128 Ultra-Zoom micro-waterfall.
         """
         target_frames = max(3, int(num_frames))
         if simulate:
@@ -263,25 +277,52 @@ class PlutoScannerEngine:
                 stop_check=stop_check,
                 capture_duration_s=capture_duration_s,
             )
-        sample_rate = 3_072_000
-        lo_offset_hz = 250_000
-        tune_lo_hz = int(center_freq_hz + lo_offset_hz)
 
-        # Scale gain: total HackRF LNA+VGA (0-102 dB) -> AD9361 hardware gain (0-73 dB)
-        desired_gain_db = min(73.0, (lna_gain_db + vga_gain_db) * 0.72)
+        # AD9361 RFIC tunable hardware boundaries (46.875 MHz to 6.000 GHz)
+        center_freq_hz = max(46_875_001.0, min(6_000_000_000.0, float(center_freq_hz)))
+        sample_rate = 4_000_000
+        rf_bandwidth_hz = 3_000_000
+
+        # Dynamic LO offset steering & boundary protection:
+        # 4.0 MSPS / 2048-pt FFT = 1953.125 Hz/bin. 625 kHz = exactly 320 bins. 1 MHz = 512 bins.
+        if center_freq_hz < 48_000_000.0:
+            # Tune LO above target carrier to safeguard lower 46.875 MHz hardware limit
+            signed_lo_offset_hz = 625_000
+            tune_lo_hz = int(round(center_freq_hz + signed_lo_offset_hz))
+            # Carrier at -625 kHz relative to LO -> bin 1024 - 320 = 704
+            # 512-bin passband is [448:960]; LO spike at 1024 is +64 bins (+125 kHz) above passband
+            c_bin_start = 448
+            c_bin_end = 960
+            signed_target_offset_hz = -625_000
+        else:
+            # Default & upper boundary steering: tune LO below target carrier
+            signed_lo_offset_hz = -625_000
+            tune_lo_hz = int(round(center_freq_hz + signed_lo_offset_hz))
+            tune_lo_hz = max(46_875_001, min(6_000_000_000, tune_lo_hz))
+            # Carrier at +625 kHz relative to LO -> bin 1024 + 320 = 1344
+            # 512-bin passband is [1088:1600]; LO spike at 1024 is -64 bins (-125 kHz) below passband
+            c_bin_start = 1088
+            c_bin_end = 1600
+            signed_target_offset_hz = 625_000
+
+        # Gain handling: explicit hardware gain or HackRF LNA+VGA conversion to AD9361 0-73 dB
+        if hardware_gain_db is not None:
+            desired_gain_db = max(0.0, min(73.0, float(hardware_gain_db)))
+        else:
+            desired_gain_db = max(0.0, min(73.0, (lna_gain_db + vga_gain_db) * 0.72))
 
         with self._lock:
             self.connect()
             self.set_rx_sample_rate(sample_rate)
-            self.set_rx_gain(desired_gain_db, mode="manual")
+            self.set_rx_rf_bandwidth(rf_bandwidth_hz)
+            self.set_rx_gain(desired_gain_db, mode=gain_mode)
             self.set_rx_frequency(tune_lo_hz)
-            time.sleep(0.015)  # AD9361 PLL settle time
+            time.sleep(0.015)  # AD9361 PLL lock & hardware AGC settle
             rssi = self.read_hardware_rssi()
 
-            # Capture ~0.65 - 1.25s of IQ data
-            dur_s = capture_duration_s if capture_duration_s is not None else 0.85
-            req_samples = max(262_144, int(sample_rate * dur_s))
-            # Round up to multiple of 8192
+            # Ensure >= 524,288 samples for 262,144-pt 15.26 Hz/bin Welch PSD & 24+ zoom frames
+            dur_s = capture_duration_s if capture_duration_s is not None else (1.25 if target_frames >= 12 else 0.85)
+            req_samples = max(524_288, int(sample_rate * dur_s))
             req_samples = ((req_samples + 8191) // 8192) * 8192
 
             import iio
@@ -294,8 +335,8 @@ class PlutoScannerEngine:
         iq = (samples[0::2] + 1j * samples[1::2]).astype(np.complex64) / 2048.0
         iq = iq - np.mean(iq)
 
-        # High-Definition 1.000 MHz Macro STFT
-        nfft_macro = 1024
+        # High-Definition 1.000 MHz Macro STFT (2048-pt FFT @ 4 MSPS = 1953.125 Hz/bin)
+        nfft_macro = 2048
         win_macro = np.hanning(nfft_macro).astype(np.float32)
         win_macro_sum = float(np.sum(win_macro))
 
@@ -306,14 +347,6 @@ class PlutoScannerEngine:
             if n_iq > seg_len
             else np.zeros(target_frames, dtype=np.int64)
         )
-
-        # Calculate frequency bins for the 1.000 MHz passband centered on nominal center_freq_hz
-        # Nominal carrier is at offset -250 kHz relative to LO
-        bin_hz = sample_rate / nfft_macro
-        center_bin = int(nfft_macro // 2 - (lo_offset_hz / bin_hz))
-        span_bins_1mhz = int(1_000_000 / bin_hz)
-        c_bin_start = max(0, center_bin - span_bins_1mhz // 2)
-        c_bin_end = min(nfft_macro, c_bin_start + span_bins_1mhz)
 
         for f_idx in range(target_frames):
             s0 = int(seg_starts[f_idx])
@@ -327,28 +360,29 @@ class PlutoScannerEngine:
             spectra = np.fft.fftshift(np.fft.fft(windowed, n=nfft_macro, axis=1), axes=1)
             mag_sq = (np.abs(spectra) / win_macro_sum) ** 2
 
-            # Smooth local DC spike at center of LO
-            lo_bin = nfft_macro // 2
-            mag_sq[:, lo_bin] = 0.5 * (mag_sq[:, lo_bin - 1] + mag_sq[:, lo_bin + 1])
+            # Smooth local DC mixer spike at center of LO
+            mag_sq[:, 1024] = 0.5 * (mag_sq[:, 1023] + mag_sq[:, 1025])
 
-            passband = mag_sq[:, c_bin_start:c_bin_end]
-            # Resample or pool to cols_per_frame
-            if passband.shape[1] != cols_per_frame:
-                x_old = np.linspace(0.0, 1.0, passband.shape[1])
+            # Exact integer 4:1 bin pooling (512 bins -> 128 cols)
+            # Preserves narrowband carrier spines while smoothing thermal noise floor
+            passband_512 = mag_sq[:, c_bin_start:c_bin_end]
+            passband_blocks = passband_512.reshape(rows_per_frame, 128, 4)
+            pooled_mag_sq = 0.55 * np.max(passband_blocks, axis=2) + 0.45 * np.mean(passband_blocks, axis=2)
+            frame_1mhz = (10.0 * np.log10(pooled_mag_sq + 1e-12)).astype(np.float32)
+
+            if cols_per_frame != 128:
+                x_old = np.linspace(0.0, 1.0, 128)
                 x_new = np.linspace(0.0, 1.0, cols_per_frame)
-                resampled = np.vstack([np.interp(x_new, x_old, row) for row in passband])
-            else:
-                resampled = passband
+                frame_1mhz = np.vstack([np.interp(x_new, x_old, row) for row in frame_1mhz]).astype(np.float32)
 
-            frame_1mhz = (10.0 * np.log10(resampled + 1e-12)).astype(np.float32)
             frames.append(frame_1mhz)
 
-        # Delegate precision DSP metric computation to HackRF engine's static analyzer
+        # Delegate precision DSP metric computation to HackRF engine's static multi-rate analyzer
         iq_metrics = HackRFScannerEngine._compute_iq_signal_metrics(
             iq=iq,
             frames=frames,
             sample_rate=sample_rate,
-            lo_offset_hz=lo_offset_hz,
+            lo_offset_hz=signed_target_offset_hz,
             is_atsc_tv=False,
             nominal_center_hz=float(center_freq_hz),
             capture_center_hz=float(tune_lo_hz),
@@ -361,6 +395,10 @@ class PlutoScannerEngine:
         iq_metrics["sdr_model"] = self._info.model
         iq_metrics["adc_bits"] = 12
         iq_metrics["hardware_rssi_db"] = rssi
+        iq_metrics["gain_mode"] = gain_mode
+        iq_metrics["rf_bandwidth_hz"] = rf_bandwidth_hz
+        iq_metrics["lo_offset_hz"] = signed_target_offset_hz
+        iq_metrics["sample_rate_hz"] = sample_rate
         return frames, iq_metrics
 
     # ------------------------------------------------------------------
@@ -395,6 +433,7 @@ class PlutoScannerEngine:
         with self._lock:
             self.connect()
             self.set_rx_sample_rate(sample_rate)
+            self.set_rx_rf_bandwidth(3_500_000)
             self.set_rx_gain(min(73.0, (config.lna_gain_db + config.vga_gain_db) * 0.75), mode="manual")
 
         freq_centers = np.arange(f_min_mhz + step_mhz / 2.0, f_max_mhz, step_mhz)

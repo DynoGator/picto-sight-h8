@@ -85,6 +85,91 @@ class TestPlutoEngine(unittest.TestCase):
         self.assertEqual(arbiter.get_active_sdr(), "LIBRESDR_PLUTO")
         self.assertEqual(arbiter.get_sdr_device_arg(), "soapy=0,driver=plutosdr,uri=ip:192.168.2.1")
 
+    def test_08_dynamic_lo_offset_boundary_steering(self) -> None:
+        """Verify dynamic LO offset steering across AD9361 RF limits (46.875 MHz - 6.000 GHz)."""
+        engine = PlutoScannerEngine()
+
+        # Lower boundary test: 47.0 MHz (< 48 MHz) -> LO steered above to protect 46.875 MHz floor
+        f_low = 47_000_000
+        frames_low, metrics_low = engine.capture_1mhz_pictogram_frames(
+            center_freq_hz=f_low,
+            num_frames=3,
+        )
+        self.assertEqual(len(frames_low), 3)
+        self.assertEqual(frames_low[0].shape, (64, 128))
+        self.assertEqual(metrics_low["lo_offset_hz"], -625_000)
+        self.assertEqual(metrics_low["sample_rate_hz"], 4_000_000)
+
+        # Mid-band test: 146.52 MHz -> LO steered below target carrier
+        f_mid = 146_520_000
+        frames_mid, metrics_mid = engine.capture_1mhz_pictogram_frames(
+            center_freq_hz=f_mid,
+            num_frames=3,
+        )
+        self.assertEqual(len(frames_mid), 3)
+        self.assertEqual(metrics_mid["lo_offset_hz"], 625_000)
+
+        # Upper boundary test: 5995.0 MHz (near 6.000 GHz ceiling) -> LO <= 6.0 GHz, no overflow
+        f_high = 5_995_000_000
+        frames_high, metrics_high = engine.capture_1mhz_pictogram_frames(
+            center_freq_hz=f_high,
+            num_frames=3,
+        )
+        self.assertEqual(len(frames_high), 3)
+        self.assertEqual(frames_high[0].shape, (64, 128))
+        self.assertEqual(metrics_high["lo_offset_hz"], 625_000)
+
+    def test_09_hardware_agc_modes(self) -> None:
+        """Verify AD9361 hardware AGC modes: manual, fast_attack, slow_attack, hybrid."""
+        engine = PlutoScannerEngine()
+        for mode in ["manual", "fast_attack", "slow_attack", "hybrid"]:
+            frames, metrics = engine.capture_1mhz_pictogram_frames(
+                center_freq_hz=101_100_000,
+                num_frames=3,
+                gain_mode=mode,
+                hardware_gain_db=45.0 if mode == "manual" else None,
+            )
+            self.assertEqual(len(frames), 3)
+            self.assertEqual(metrics["gain_mode"], mode)
+            self.assertGreater(metrics["hardware_rssi_db"], 0.0)
+
+    def test_10_ai_pictogram_classifier_handoff(self) -> None:
+        """Verify seamless end-to-end handoff between PlutoSDR+ frames and AIPictogramClassifierManager."""
+        from core.pictogram_engine import AIPictogramClassifierManager
+
+        engine = PlutoScannerEngine()
+        mgr = AIPictogramClassifierManager()
+        mgr.initialize()
+
+        frames, metrics = engine.capture_1mhz_pictogram_frames(
+            center_freq_hz=101_100_000,
+            num_frames=6,
+            rows_per_frame=64,
+            cols_per_frame=128,
+        )
+        self.assertEqual(len(frames), 6)
+        self.assertEqual(frames[0].shape, (64, 128))
+        self.assertEqual(metrics["adc_bits"], 12)
+        self.assertEqual(metrics["sdr_device"], "LIBRESDR_PLUTO")
+        self.assertIn("zoom_frames", metrics)
+        self.assertGreater(len(metrics["zoom_frames"]), 0)
+        self.assertEqual(metrics["zoom_frames"][0].shape, (64, 128))
+
+        res = mgr.analyze_spectrogram_frames(
+            center_freq_hz=101_100_000,
+            frames=frames,
+            bandwidth_hz=1_000_000.0,
+            iq_metrics=metrics,
+        )
+        self.assertIsNotNone(res)
+        self.assertGreater(res.confidence, 0.0)
+        self.assertTrue(len(res.label) > 0)
+        self.assertTrue(len(res.category) > 0)
+        self.assertGreater(res.zoom_frames_evaluated, 0)
+        self.assertIsNotNone(res.composite_rgb)
+        self.assertEqual(res.composite_rgb.ndim, 3)
+        self.assertEqual(res.composite_rgb.shape[2], 3)
+
 
 if __name__ == "__main__":
     unittest.main()

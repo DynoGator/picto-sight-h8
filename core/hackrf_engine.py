@@ -40,7 +40,8 @@ STANDARD_CTCSS_TONES_HZ: Tuple[float, ...] = (
     203.5, 206.5, 210.7, 218.1, 225.7, 229.1, 233.6, 241.8, 250.3, 254.1,
 )
 
-# Precomputed anti-alias FIR taps for clean 8x decimation stages (2.0 MSPS -> 250 kSPS -> 31.25 kSPS)
+# Precomputed anti-alias FIR taps for clean decimation stages (4.0 MSPS -> 2.0 MSPS -> 250 kSPS -> 31.25 kSPS)
+_FIR_DECIM2_TAPS: np.ndarray = firwin(31, cutoff=0.45, window="hamming").astype(np.float32)
 _FIR_DECIM8_TAPS: np.ndarray = firwin(33, cutoff=0.105, window="hamming").astype(np.float32)
 
 
@@ -1150,6 +1151,15 @@ class HackRFScannerEngine:
         return frames, iq_metrics
 
     @staticmethod
+    def _fir_decimate_2x(sig: np.ndarray) -> np.ndarray:
+        """Clean Hamming-sinc anti-aliased 2x complex IQ decimator (4.0 MSPS -> 2.0 MSPS)."""
+        if len(sig) < 32:
+            return sig[::2]
+        re_f = np.convolve(sig.real, _FIR_DECIM2_TAPS, mode="same")[::2]
+        im_f = np.convolve(sig.imag, _FIR_DECIM2_TAPS, mode="same")[::2]
+        return (re_f + 1j * im_f).astype(np.complex64)
+
+    @staticmethod
     def _fir_decimate_8x(sig: np.ndarray) -> np.ndarray:
         """Clean Hamming-sinc anti-aliased 8x complex IQ decimator."""
         if len(sig) < 64:
@@ -1380,10 +1390,25 @@ class HackRFScannerEngine:
             phase_step = -2.0 * math.pi * float(ddc_shift_hz) / float(sample_rate)
             bb_full = iq[:max_ddc_n] * np.exp(1j * (phase_step * t_vec)).astype(np.complex64)
 
-            # Stage 1: Clean FIR 8x decimation -> 250.0 kSPS wideband baseband
-            z_250k = HackRFScannerEngine._fir_decimate_8x(bb_full)
-            # Stage 2: Clean FIR 8x decimation -> 31.25 kSPS narrowband ultra-zoom baseband (64x total!)
-            z_31k = HackRFScannerEngine._fir_decimate_8x(z_250k)
+            # Multi-rate decimation pipeline to guaranteed 250.0 kSPS and 31.25 kSPS basebands
+            eff_sr = float(sample_rate)
+            if abs(eff_sr - 4_000_000.0) < 100.0:
+                # 4.0 MSPS (PlutoSDR+ native): Clean 2x half-band FIR decimation to 2.0 MSPS
+                bb_2m = HackRFScannerEngine._fir_decimate_2x(bb_full)
+                z_250k = HackRFScannerEngine._fir_decimate_8x(bb_2m)
+                z_31k = HackRFScannerEngine._fir_decimate_8x(z_250k)
+            elif abs(eff_sr - 2_000_000.0) < 100.0:
+                # 2.0 MSPS (HackRF One native): Dual-stage 8x FIR decimation (64x total)
+                z_250k = HackRFScannerEngine._fir_decimate_8x(bb_full)
+                z_31k = HackRFScannerEngine._fir_decimate_8x(z_250k)
+            else:
+                # Arbitrary sample rate: Polyphase rational resampler to exact 250.0 kSPS
+                from scipy.signal import resample_poly
+                up_rate = 250_000
+                down_rate = int(round(eff_sr))
+                gcd_v = math.gcd(up_rate, down_rate)
+                z_250k = resample_poly(bb_full, up_rate // gcd_v, down_rate // gcd_v).astype(np.complex64)
+                z_31k = HackRFScannerEngine._fir_decimate_8x(z_250k)
 
             # Physical envelope & instantaneous FM deviation analysis
             env_nb = np.abs(z_31k)

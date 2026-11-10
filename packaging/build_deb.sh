@@ -14,7 +14,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_DIR}"
 
 PKG_NAME="picto-sight-h8"
-PKG_VERSION="3.2.0"
+PKG_VERSION="3.3.0"
 PKG_RELEASE="1.trixie"
 ARCH="$(dpkg --print-architecture 2>/dev/null || echo "arm64")"
 DEB_FILENAME="${PKG_NAME}_${PKG_VERSION}-${PKG_RELEASE}_${ARCH}.deb"
