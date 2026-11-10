@@ -352,17 +352,19 @@ class Node:
         return ips
 
 
-def ws_accept(key: str) -> bytes:
+def ws_accept(key: str, subprotocol: Optional[str] = None) -> bytes:
     digest = hashlib.sha1((key + MAGIC).encode()).digest()
     accept = base64.b64encode(digest).decode()
-    return (
+    resp = (
         "HTTP/1.1 101 Switching Protocols\r\n"
         "Upgrade: websocket\r\n"
         "Connection: Upgrade\r\n"
         f"Sec-WebSocket-Accept: {accept}\r\n"
-        "Sec-WebSocket-Protocol: pictosight\r\n"
-        "\r\n"
-    ).encode()
+    )
+    if subprotocol:
+        resp += f"Sec-WebSocket-Protocol: {subprotocol}\r\n"
+    resp += "\r\n"
+    return resp.encode()
 
 
 def read_http(conn: socket.socket) -> str:
@@ -622,13 +624,17 @@ def serve_client(conn: socket.socket, addr, node: Node) -> None:
     try:
         header = read_http(conn)
         key = ""
+        subproto = None
         for line in header.split("\r\n"):
             if line.lower().startswith("sec-websocket-key:"):
                 key = line.split(":", 1)[1].strip()
+            elif line.lower().startswith("sec-websocket-protocol:"):
+                subproto = line.split(":", 1)[1].strip()
         if not key:
             serve_http_response(conn, header, node)
             return
-        conn.sendall(ws_accept(key))
+        selected_proto = "pictosight" if (subproto and "pictosight" in subproto) else None
+        conn.sendall(ws_accept(key, selected_proto))
         node.peer = (addr[0], addr[1])
         print(f"[BRIDGE] Handset connected via WebSocket from {addr[0]}:{addr[1]}", flush=True)
         conn.settimeout(30)
